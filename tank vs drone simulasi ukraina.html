@@ -142,15 +142,16 @@
     <canvas id="board" width="660" height="480"></canvas>
 
     <div class="legend">
+      <span style="width:100%; color:var(--text-cream);">Angka di pojok tiap tile = biaya tempuh DRONE (biaya 1/tanah tidak ditulis); "X" = terhalang total.</span>
       <span><i class="swatch" style="background:var(--tank)"></i>Tank (pemain)</span>
       <span><i class="swatch" style="background:var(--drone)"></i>Drone (pengejar)</span>
-      <span><i class="swatch" style="background:var(--tree-canopy)"></i>Pohon</span>
-      <span><i class="swatch" style="background:var(--rock)"></i>Bebatuan</span>
-      <span><i class="swatch" style="background:var(--river)"></i>Sungai</span>
-      <span><i class="swatch" style="background:var(--bridge)"></i>Jembatan (biaya 3)</span>
-      <span><i class="swatch" style="background:var(--artillery-body)"></i>Artileri musuh</span>
-      <span><i class="swatch" style="background:var(--camp-tent)"></i>Kamp tentara</span>
-      <span><i class="swatch" style="background:var(--ruin-wall)"></i>Bangunan runtuh</span>
+      <span><i class="swatch" style="background:var(--tree-canopy)"></i>Pohon — tank terhalang, drone lewat (biaya 4)</span>
+      <span><i class="swatch" style="background:var(--rock)"></i>Bebatuan — tank terhalang, drone lewat (biaya 2)</span>
+      <span><i class="swatch" style="background:var(--river)"></i>Sungai — tank terhalang, drone lewat (biaya 2)</span>
+      <span><i class="swatch" style="background:var(--bridge)"></i>Jembatan (biaya 0, tank & drone)</span>
+      <span><i class="swatch" style="background:var(--artillery-body)"></i>Artileri anti-udara — terhalang tank & drone</span>
+      <span><i class="swatch" style="background:var(--camp-tent)"></i>Kamp tentara — tank terhalang, drone lewat (biaya 6)</span>
+      <span><i class="swatch" style="background:var(--ruin-wall)"></i>Bangunan runtuh — tank terhalang, drone lewat (biaya 2)</span>
       <span><i class="swatch" style="background:var(--path)"></i>Jalur kejar (tahu posisi tank)</span>
       <span><i class="swatch" style="background:var(--scan-wave-near)"></i>Tersisir — biaya rendah (dekat)</span>
       <span><i class="swatch" style="background:var(--scan-wave-far)"></i>Tersisir — biaya tinggi (jauh)</span>
@@ -242,10 +243,34 @@ const ARTILLERY = 5; // artileri musuh yang ditinggalkan, terblokir
 const CAMP      = 6; // kamp tentara (blok 2x2), terblokir
 const RUIN      = 7; // bangunan runtuh (blok 2x2), terblokir
 
-const TERRAIN_COST = { [DIRT]: 1, [BRIDGE]: 3 };
+// BARU — biaya & keterlewatan sekarang dibedakan per unit. Tank berjalan
+// di darat sehingga tetap terhalang oleh medan padat/basah apapun. Drone
+// terbang di atasnya, jadi bebatuan/reruntuhan/sungai tetap bisa DILEWATI
+// (dengan biaya tambahan karena harus naik/hati-hati), sementara artileri
+// di peta ini adalah artileri ANTI-UDARA — tetap menghalangi drone secara
+// mutlak, walau tidak menghalangi tank di darat.
+const TANK_TERRAIN_COST  = { [DIRT]: 1, [BRIDGE]: 0 };
+const DRONE_TERRAIN_COST = {
+  [DIRT]: 1, [BRIDGE]: 0,
+  [ROCK]: 2,   // terbang melewati bebatuan — sedikit lebih lambat/hati-hati
+  [RUIN]: 2,   // terbang melewati reruntuhan — sama seperti bebatuan
+  [RIVER]: 2,  // terbang melintasi sungai — tidak perlu jembatan
+  [TREE]: 4,   // harus naik di atas kanopi pohon — biaya jauh lebih tinggi
+  [CAMP]: 6    // melintas di atas kamp tentara — biaya TERTINGGI, ada
+               // risiko tentara yang berkemah di situ membawa senjata
+               // anti-udara genggam dan menembak drone
+};
 
+// isBlocked() = aturan TANK (jalan darat): tetap seperti semula, dipakai
+// untuk pergerakan tank & validasi keterhubungan peta.
 function isBlocked(t){
   return t === TREE || t === ROCK || t === RIVER || t === ARTILLERY || t === CAMP || t === RUIN;
+}
+
+// BARU — aturan DRONE (terbang): hanya artileri anti-udara yang benar-benar
+// menghalangi; sisanya bisa dilewati (dengan biaya di DRONE_TERRAIN_COST).
+function isBlockedForDrone(t){
+  return t === ARTILLERY;
 }
 
 /* BARU — objek padat/tinggi yang menghalangi PANDANGAN drone (dipakai untuk
@@ -265,17 +290,98 @@ function blocksSight(t){ return SIGHT_BLOCKERS.has(t); }
 function randInt(min, max){ return Math.floor(Math.random() * (max - min + 1)) + min; }
 function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 
-function pickDistinctRows(count, total){
-  const set = new Set();
-  while(set.size < count){ set.add(randInt(1, total - 2)); }
-  return [...set];
+// BARU — sungai sekarang dibangun sebagai random walk dari baris paling
+// atas ke baris paling bawah, dengan 5 pilihan arah per langkah — turun,
+// diagonal turun-kiri, diagonal turun-kanan, horizontal kiri, horizontal
+// kanan — dan KELIMANYA punya peluang muncul yang SAMA RATA (masing-masing
+// 1/5) di tiap langkah, supaya kelokan sungai benar-benar bervariasi dan
+// tidak didominasi arah tertentu. Baris yang belum tersentuh sampai
+// random walk berakhir ditambal lurus ke bawah (jaring pengaman) supaya
+// sungai tetap membelah peta dari atas sampai bawah.
+function generateRiverPath(){
+  const cells = [];
+  const visited = new Set();
+  let r = 0;
+  let c = clamp(Math.floor(COLS / 2) + randInt(-2, 2), 2, COLS - 3);
+  cells.push({ r, c }); visited.add(r + ',' + c);
+
+  const dirPool = [
+    { dr: 1, dc: 0 },                                     // vertikal (turun)
+    { dr: 1, dc: -1 }, { dr: 1, dc: 1 },                   // diagonal
+    { dr: 0, dc: -1 }, { dr: 0, dc: 1 }                    // horizontal
+  ];
+
+  let guard = ROWS * COLS * 3;
+  while(r < ROWS - 1 && guard > 0){
+    guard--;
+    const move = dirPool[randInt(0, dirPool.length - 1)];
+    const nr = clamp(r + move.dr, 0, ROWS - 1);
+    const nc = clamp(c + move.dc, 2, COLS - 3);
+    const k = nr + ',' + nc;
+    if(!visited.has(k)){ visited.add(k); cells.push({ r: nr, c: nc }); }
+    r = nr; c = nc;
+  }
+  // jaring pengaman: kalau random walk berhenti sebelum baris terakhir
+  // (guard habis), teruskan lurus ke bawah supaya sungai tetap membelah
+  // seluruh tinggi peta.
+  while(r < ROWS - 1){
+    r++;
+    const k = r + ',' + c;
+    if(!visited.has(k)){ visited.add(k); cells.push({ r, c }); }
+  }
+  return cells;
 }
 
-function canPlaceBlock2x2(grid, r, c){
+// Memilih baris-baris jembatan dari sel-sel sungai yang sudah dibangun.
+// Karena satu baris bisa berisi beberapa sel sungai berjajar (akibat
+// langkah horizontal random walk), sel-sel dikelompokkan per baris dulu.
+// PENTING: begitu sebuah baris terpilih jadi titik jembatan, SELURUH sel
+// sungai di baris itu ikut dijadikan jembatan (bukan cuma 1 sel acak) —
+// supaya lebar jembatan menyesuaikan lebar sungai di titik itu, dan tidak
+// ada lagi sel sungai tersisa di tengah yang membuat darat -> jembatan ->
+// balik lagi ke air. "count" di sini berarti jumlah baris/titik
+// penyeberangan yang dibuat, bukan jumlah sel jembatan individual.
+function pickBridgeCells(riverCells, count){
+  const byRow = new Map();
+  for(const cell of riverCells){
+    if(cell.r <= 0 || cell.r >= ROWS - 1) continue; // hindari baris tepi
+    if(!byRow.has(cell.r)) byRow.set(cell.r, []);
+    byRow.get(cell.r).push(cell);
+  }
+  const rowsPool = [...byRow.keys()];
+  const bridges = [];
+  while(bridges.length < count && rowsPool.length){
+    const idx = randInt(0, rowsPool.length - 1);
+    const row = rowsPool.splice(idx, 1)[0];
+    const segment = byRow.get(row); // seluruh sel sungai di baris ini
+    bridges.push(...segment);
+  }
+  return bridges;
+}
+
+// BARU — "zona aman" di sekeliling tiap jembatan (sel jembatan + 8
+// tetangganya) supaya tidak ada satupun rintangan (pohon/batu/artileri/
+// kamp/reruntuhan) ditaruh menempel jembatan dan menghalangi jalan masuk
+// ke sana.
+function buildBridgeExclusionZone(bridgeCells){
+  const zone = new Set();
+  for(const b of bridgeCells){
+    for(let dr = -1; dr <= 1; dr++){
+      for(let dc = -1; dc <= 1; dc++){
+        const nr = b.r + dr, nc = b.c + dc;
+        if(nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) zone.add(nr + ',' + nc);
+      }
+    }
+  }
+  return zone;
+}
+
+function canPlaceBlock2x2(grid, r, c, exclude){
   if(r + 1 >= ROWS || c + 1 >= COLS) return false;
   for(let dr = 0; dr <= 1; dr++){
     for(let dc = 0; dc <= 1; dc++){
       if(grid[r+dr][c+dc] !== DIRT) return false;
+      if(exclude && exclude.has((r+dr) + ',' + (c+dc))) return false;
     }
   }
   return true;
@@ -307,39 +413,43 @@ function generateMap(startPos, goalPos){
     attempt++;
     grid = Array.from({length: ROWS}, () => Array(COLS).fill(DIRT));
 
-    // 1) sungai berkelok
-    let riverCol = Math.floor(COLS / 2) + randInt(-2, 2);
-    const riverCells = [];
-    for(let r = 0; r < ROWS; r++){
-      riverCol = clamp(riverCol + randInt(-1, 1), 2, COLS - 3);
-      grid[r][riverCol] = RIVER;
-      riverCells.push({ r, c: riverCol });
-    }
+    // 1) sungai berkelok (random walk: turun/diagonal/horizontal)
+    const riverCells = generateRiverPath();
+    for(const cell of riverCells) grid[cell.r][cell.c] = RIVER;
+
     // 2) dua jembatan
-    for(const br of pickDistinctRows(2, ROWS)){
-      const cell = riverCells[br];
-      grid[cell.r][cell.c] = BRIDGE;
-    }
+    const bridgeCells = pickBridgeCells(riverCells, 2);
+    for(const b of bridgeCells) grid[b.r][b.c] = BRIDGE;
+
+    // BARU — zona di sekeliling jembatan (sel jembatan + 8 tetangga) yang
+    // harus tetap bersih dari rintangan apapun, supaya jembatan selalu
+    // mudah didekati dari darat.
+    const bridgeZone = buildBridgeExclusionZone(bridgeCells);
 
     // 3) pohon (~8%)
     let treeBudget = Math.floor(ROWS * COLS * 0.08);
-    while(treeBudget > 0){
+    let treeSafety = treeBudget * 40;
+    while(treeBudget > 0 && treeSafety > 0){
+      treeSafety--;
       const r = randInt(0, ROWS - 1), c = randInt(0, COLS - 1);
-      if(grid[r][c] === DIRT){ grid[r][c] = TREE; treeBudget--; }
+      if(grid[r][c] === DIRT && !bridgeZone.has(r + ',' + c)){ grid[r][c] = TREE; treeBudget--; }
     }
 
     // 4) bebatuan (~6%)
     let rockBudget = Math.floor(ROWS * COLS * 0.06);
-    while(rockBudget > 0){
+    let rockSafety = rockBudget * 40;
+    while(rockBudget > 0 && rockSafety > 0){
+      rockSafety--;
       const r = randInt(0, ROWS - 1), c = randInt(0, COLS - 1);
-      if(grid[r][c] === DIRT){ grid[r][c] = ROCK; rockBudget--; }
+      if(grid[r][c] === DIRT && !bridgeZone.has(r + ',' + c)){ grid[r][c] = ROCK; rockBudget--; }
     }
 
     // 5) artileri musuh tak terpakai — 5 unit tersebar satu sel
-    let artilleryBudget = 5;
-    while(artilleryBudget > 0){
+    let artilleryBudget = 5, artillerySafety = 400;
+    while(artilleryBudget > 0 && artillerySafety > 0){
+      artillerySafety--;
       const r = randInt(0, ROWS - 1), c = randInt(0, COLS - 1);
-      if(grid[r][c] === DIRT){ grid[r][c] = ARTILLERY; artilleryBudget--; }
+      if(grid[r][c] === DIRT && !bridgeZone.has(r + ',' + c)){ grid[r][c] = ARTILLERY; artilleryBudget--; }
     }
 
     // 6) kamp tentara — 2 blok 2x2
@@ -347,7 +457,7 @@ function generateMap(startPos, goalPos){
     while(campBudget > 0 && safety > 0){
       safety--;
       const r = randInt(0, ROWS - 2), c = randInt(0, COLS - 2);
-      if(canPlaceBlock2x2(grid, r, c)){
+      if(canPlaceBlock2x2(grid, r, c, bridgeZone)){
         grid[r][c] = CAMP; grid[r][c+1] = CAMP;
         grid[r+1][c] = CAMP; grid[r+1][c+1] = CAMP;
         campBudget--;
@@ -359,7 +469,7 @@ function generateMap(startPos, goalPos){
     while(ruinBudget > 0 && safety > 0){
       safety--;
       const r = randInt(0, ROWS - 2), c = randInt(0, COLS - 2);
-      if(canPlaceBlock2x2(grid, r, c)){
+      if(canPlaceBlock2x2(grid, r, c, bridgeZone)){
         grid[r][c] = RUIN; grid[r][c+1] = RUIN;
         grid[r+1][c] = RUIN; grid[r+1][c+1] = RUIN;
         ruinBudget--;
@@ -425,8 +535,10 @@ function neighbors(node, grid){
     const nr = node.r + dr, nc = node.c + dc;
     if(nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
     const terrain = grid[nr][nc];
-    if(isBlocked(terrain)) continue;
-    result.push({ r: nr, c: nc, stepCost: TERRAIN_COST[terrain] });
+    // BARU — search() ini dipakai KHUSUS untuk drone (mengejar/menyisir),
+    // jadi pakai aturan & biaya drone, bukan aturan tank.
+    if(isBlockedForDrone(terrain)) continue;
+    result.push({ r: nr, c: nc, stepCost: DRONE_TERRAIN_COST[terrain] });
   }
   return result;
 }
@@ -559,7 +671,7 @@ function generateSearchPattern(grid){
       ? Array.from({length: COLS}, (_, i) => i)
       : Array.from({length: COLS}, (_, i) => COLS - 1 - i);
     for(const c of cols){
-      if(!isBlocked(grid[r][c])) waypoints.push({ r, c });
+      if(!isBlockedForDrone(grid[r][c])) waypoints.push({ r, c });
     }
   }
   return waypoints;
@@ -625,10 +737,14 @@ function startIntroSequence(){
   lastPath = [];
   lastKnownPos = null;
 
-  // Tahap 1: UCS dari posisi drone ke posisi awal tank, murni untuk
-  // menghasilkan urutan ekspansi yang akan dianimasikan sebagai gelombang.
-  const ucsResult = search(grid, drone, introTankPos, 'ucs', 'zero');
-  scanExpandedOrder = ucsResult.expandedOrder || [];
+  // Tahap 1: pemindaian awal dari posisi drone ke posisi awal tank,
+  // memakai algoritma & heuristik yang SEDANG DIPILIH di panel (BUKAN
+  // di-hardcode ke UCS) — perbaikan bug: sebelumnya tahap ini selalu
+  // memakai UCS apapun pilihan di dropdown, sehingga terlihat seolah
+  // "Reset Posisi" mengubah algoritma balik ke UCS meski A* sedang dipilih.
+  const algo = algoSelect.value, heur = heurSelect.value;
+  const scanResult = search(grid, drone, introTankPos, algo, heur);
+  scanExpandedOrder = scanResult.expandedOrder || [];
   scanRevealedCount = 0;
   // BARU — biaya tempuh tertinggi di antara sel yang diekspansi, dipakai
   // untuk menormalisasi gradien warna dekat(rendah)->jauh(tinggi).
@@ -636,15 +752,16 @@ function startIntroSequence(){
   introPhase = 'scanning';
   droneState = 'scanning';
 
+  const algoLabel = algo === 'ucs' ? 'UCS' : ('A* (' + heur + ')');
   droneStateBox.textContent = 'MEMINDAI — drone menyapu seluruh medan untuk menemukan tank';
-  statusBox.textContent = 'Pemindaian awal dimulai: drone mencari posisi awal tank ke seluruh medan (UCS)...';
+  statusBox.textContent = 'Pemindaian awal dimulai: drone mencari posisi awal tank ke seluruh medan (' + algoLabel + ')...';
   statusBox.classList.remove('caught');
-  renderStats(ucsResult);
+  renderStats(scanResult);
   draw();
 
   if(scanExpandedOrder.length === 0){
     // Kasus langka (mis. drone & tank di sel yang sama): lewati animasi.
-    finishScanStage(ucsResult);
+    finishScanStage(scanResult);
     return;
   }
 
@@ -654,44 +771,47 @@ function startIntroSequence(){
     if(scanRevealedCount >= scanExpandedOrder.length){
       clearInterval(scanTimer);
       scanTimer = null;
-      finishScanStage(ucsResult);
+      finishScanStage(scanResult);
     }
   }, SCAN_TICK_MS);
 }
 
 // Tahap 2 — "tank ketemu": buang semua penanda gelombang yang tak
-// terpakai, sisakan sebentar hanya jalur UCS menuju tank sebagai bukti
-// visual bahwa pemindaian berhasil. Lalu lanjut ke tahap 3 (hitung A*).
-function finishScanStage(ucsResult){
+// terpakai, sisakan sebentar hanya jalur menuju tank sebagai bukti
+// visual bahwa pemindaian berhasil. Lalu lanjut ke tahap 3 (hitung
+// jalur nyata, tetap dengan algoritma yang sama).
+function finishScanStage(scanResult){
   scanExpandedOrder = [];
   scanRevealedCount = 0;
-  lastPath = ucsResult.found ? ucsResult.path : [];
-  droneStateBox.textContent = 'TANK DITEMUKAN (posisi awal) — menyusun jalur dengan A*';
-  statusBox.textContent = 'Posisi awal tank ditemukan lewat pemindaian UCS. Drone menghitung jalur tercepat dengan A*...';
+  lastPath = scanResult.found ? scanResult.path : [];
+  droneStateBox.textContent = 'TANK DITEMUKAN (posisi awal) — menyusun jalur pergerakan';
+  statusBox.textContent = 'Posisi awal tank ditemukan. Drone menghitung jalur menuju sana...';
   draw();
 
   setTimeout(startIntroMove, SCAN_PATH_PAUSE_MS);
 }
 
-// Tahap 3 & 4 — hitung jalur NYATA dengan A* (otomatis mencari jalur
-// alternatif kalau ada halangan), lalu gerakkan drone di sepanjang
-// jalur itu sendiri, mengabaikan pergerakan tank yang sesungguhnya.
+// Tahap 3 & 4 — hitung jalur NYATA (algoritma & heuristik yang sedang
+// dipilih di panel — perbaikan bug yang sama seperti tahap 1, dulu
+// selalu di-hardcode ke A*), lalu gerakkan drone di sepanjang jalur itu
+// sendiri, mengabaikan pergerakan tank yang sesungguhnya.
 function startIntroMove(){
-  const astarResult = search(grid, drone, introTankPos, 'astar', heurSelect.value);
-  renderStats(astarResult);
-  introPath = astarResult.path;
+  const algo = algoSelect.value, heur = heurSelect.value;
+  const moveResult = search(grid, drone, introTankPos, algo, heur);
+  renderStats(moveResult);
+  introPath = moveResult.path;
   introPathIndex = 0;
   introPhase = 'moving';
   droneState = 'moving';
   lastPath = introPath;
 
   droneStateBox.textContent = 'MENUJU POSISI AWAL TANK — mengabaikan pergerakan tank untuk sementara';
-  statusBox.textContent = astarResult.found
+  statusBox.textContent = moveResult.found
     ? 'Drone bergerak menuju posisi awal tank hasil pemindaian, mencari jalur alternatif kalau ada halangan (mengabaikan pergerakan tank saat ini)...'
     : 'Drone tidak menemukan jalur menuju posisi awal tank (terkurung terrain) — pemindaian awal dibatalkan.';
   draw();
 
-  if(!astarResult.found || introPath.length <= 1){
+  if(!moveResult.found || introPath.length <= 1){
     // Kasus langka: tak ada jalur, atau drone & posisi awal tank sudah
     // sama persis -> langsung selesaikan sekuens tanpa animasi jalan.
     finishIntroSequence();
@@ -936,6 +1056,76 @@ function draw(){
   drawDrone();
 }
 
+function isRiverish(t){ return t === RIVER || t === BRIDGE; }
+
+// BARU — menyimpulkan arah lokal aliran sungai tepat di sel jembatan ini,
+// dengan mengecek 8 tetangganya untuk sel sungai/jembatan lain yang
+// tersambung. Dipakai supaya papan jembatan digambar SEJAJAR arah sungai
+// (menutupi air di sepanjang alirannya), sehingga penyeberangannya jelas
+// tegak lurus terhadap arah itu — bukan asal horizontal seperti
+// sebelumnya, yang membuat jembatan kadang "menghadap" ke air alih-alih
+// menyeberang ke daerah seberang saat sungai lokal ternyata mengalir
+// horizontal atau diagonal.
+function getRiverAxis(r, c){
+  const north = r > 0 && isRiverish(grid[r-1][c]);
+  const south = r < ROWS - 1 && isRiverish(grid[r+1][c]);
+  const west  = c > 0 && isRiverish(grid[r][c-1]);
+  const east  = c < COLS - 1 && isRiverish(grid[r][c+1]);
+  const nw = r > 0 && c > 0 && isRiverish(grid[r-1][c-1]);
+  const se = r < ROWS - 1 && c < COLS - 1 && isRiverish(grid[r+1][c+1]);
+  const ne = r > 0 && c < COLS - 1 && isRiverish(grid[r-1][c+1]);
+  const sw = r < ROWS - 1 && c > 0 && isRiverish(grid[r+1][c-1]);
+
+  if(north || south) return 'vertical';
+  if(west || east) return 'horizontal';
+  if(nw || se) return 'diag-main';  // arus mengalir dari arah '\'
+  if(ne || sw) return 'diag-anti';  // arus mengalir dari arah '/'
+  return 'horizontal'; // fallback langka (jembatan terisolasi)
+}
+
+// Papan jembatan digambar SEJAJAR arah sungai (axis), supaya jelas mana
+// sisi yang menghadap ke seberang (arah menyeberang selalu TEGAK LURUS
+// terhadap papan-papan ini).
+function drawBridgeTies(x, y, axis){
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, CELL, CELL);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1;
+
+  if(axis === 'vertical'){
+    for(let i = 1; i < 4; i++){
+      ctx.beginPath();
+      ctx.moveTo(x + i*CELL/4, y);
+      ctx.lineTo(x + i*CELL/4, y + CELL);
+      ctx.stroke();
+    }
+  } else if(axis === 'horizontal'){
+    for(let i = 1; i < 4; i++){
+      ctx.beginPath();
+      ctx.moveTo(x, y + i*CELL/4);
+      ctx.lineTo(x + CELL, y + i*CELL/4);
+      ctx.stroke();
+    }
+  } else {
+    const sign = axis === 'diag-main' ? 1 : -1;
+    for(let i = -1; i <= 1; i++){
+      const off = i * CELL * 0.6;
+      ctx.beginPath();
+      if(sign === 1){
+        ctx.moveTo(x - CELL + off, y - CELL);
+        ctx.lineTo(x + 2*CELL + off, y + 2*CELL);
+      } else {
+        ctx.moveTo(x + 2*CELL + off, y - CELL);
+        ctx.lineTo(x - CELL + off, y + 2*CELL);
+      }
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function drawCell(terrain, r, c){
   const x = c * CELL, y = r * CELL;
   const checker = (r + c) % 2 === 0;
@@ -973,14 +1163,7 @@ function drawCell(terrain, r, c){
     case BRIDGE: {
       ctx.fillStyle = getVar('--bridge');
       ctx.fillRect(x, y, CELL, CELL);
-      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-      ctx.lineWidth = 1;
-      for(let i = 1; i < 4; i++){
-        ctx.beginPath();
-        ctx.moveTo(x, y + i * CELL/4);
-        ctx.lineTo(x + CELL, y + i * CELL/4);
-        ctx.stroke();
-      }
+      drawBridgeTies(x, y, getRiverAxis(r, c));
       break;
     }
     case ARTILLERY: {
@@ -1027,6 +1210,37 @@ function drawCell(terrain, r, c){
     }
     default: break; // DIRT, sudah digambar sebagai dasar
   }
+
+  drawCostLabel(terrain, r, c);
+}
+
+// BARU — menuliskan biaya tempuh DRONE di pojok kanan-bawah tiap sel,
+// supaya g(n) yang dijumlahkan UCS/A* terlihat langsung di peta (bukan
+// cuma di legenda). Artileri anti-udara ditandai "X" karena sama sekali
+// tak terlewati drone (tidak punya biaya).
+function drawCostLabel(terrain, r, c){
+  const x = c * CELL, y = r * CELL;
+  const isBlockedTile = terrain === ARTILLERY;
+  const cost = DRONE_TERRAIN_COST[terrain];
+
+  // BARU — biaya 1 (tanah datar) adalah "default" tak perlu ditulis,
+  // supaya tile yang mahal (2/3/4/6) dan tile terhalang (X) lebih menonjol
+  // tanpa peta dipenuhi angka "1" di mana-mana.
+  if(!isBlockedTile && cost === 1) return;
+
+  const label = isBlockedTile ? 'X' : String(cost);
+
+  ctx.save();
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  const px = x + CELL - 3, py = y + CELL - 3;
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+  ctx.strokeText(label, px, py);
+  ctx.fillStyle = isBlockedTile ? '#F0A04B' : '#F5F0E0';
+  ctx.fillText(label, px, py);
+  ctx.restore();
 }
 
 function drawTank(){
