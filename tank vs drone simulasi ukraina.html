@@ -1,285 +1,467 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="id">
-<head>
-<meta charset="UTF-8">
-<title>Tank vs Drone — UCS vs A* Pathfinding</title>
-<style>
-  /* =========================================================
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tank vs Drone — UCS vs A* Pathfinding</title>
+    <style>
+      /* =========================================================
      TOKEN DESAIN — tema medan perang: tanah kering, hijau zaitun
      untuk vegetasi, abu gunmetal untuk artileri/reruntuhan, dan
      aksen oranye sinyal untuk drone (elemen paling "berbahaya").
      ========================================================= */
-  :root{
-    --bg-deep:#1B1A15;
-    --panel:#232019;
-    --panel-border:#3A3427;
-    --text-cream:#E8E1CF;
-    --text-dim:#A79E88;
-    --accent-signal:#E0862B;
-    --accent-signal-hover:#F0A04B;
+      :root {
+        --bg-deep: #1b1a15;
+        --panel: #232019;
+        --panel-border: #3a3427;
+        --text-cream: #e8e1cf;
+        --text-dim: #a79e88;
+        --accent-signal: #e0862b;
+        --accent-signal-hover: #f0a04b;
 
-    --dirt:#8A7A54;
-    --dirt-alt:#7F6F4B;
-    --tree-canopy:#4B5A2E;
-    --tree-trunk:#4A3623;
-    --rock:#6E6A62;
-    --rock-dark:#54514A;
-    --river:#4A6670;
-    --river-alt:#527081;
-    --bridge:#7A5B3A;
-    --artillery-body:#3E4136;
-    --artillery-barrel:#2A2C24;
-    --camp-tent:#8C7A4E;
-    --camp-tent-dark:#6E5F3C;
-    --ruin-wall:#7A756A;
-    --ruin-crack:#4E4A42;
+        --dirt: #8a7a54;
+        --dirt-alt: #7f6f4b;
+        --tree-canopy: #4b5a2e;
+        --tree-trunk: #4a3623;
+        --rock: #6e6a62;
+        --rock-dark: #54514a;
+        --river: #4a6670;
+        --river-alt: #527081;
+        --bridge: #7a5b3a;
+        --artillery-body: #3e4136;
+        --artillery-barrel: #2a2c24;
+        --camp-tent: #8c7a4e;
+        --camp-tent-dark: #6e5f3c;
+        --ruin-wall: #7a756a;
+        --ruin-crack: #4e4a42;
 
-    --tank:#5C6B3C;
-    --tank-dark:#40492A;
-    --drone:#C1443A;
-    --drone-dark:#8C2E27;
-    --path:#F0D48B;
-    --danger:#C1443A;
+        --tank: #5c6b3c;
+        --tank-dark: #40492a;
+        --drone: #c1443a;
+        --drone-dark: #8c2e27;
+        --path: #f0d48b;
+        --danger: #c1443a;
 
-    /* BARU — warna khusus untuk mode pencarian drone (fog of war):
+        /* BARU — warna khusus untuk mode pencarian drone (fog of war):
        dipisah dari --path (yang sekarang khusus berarti "jalur kejar",
        dipakai hanya saat drone sudah tahu posisi tank). */
-    --search-active:#6EA8FE;  /* jalur aktif saat drone masih menyisir */
-    --search-trail:#5EB5C7;   /* jejak area yang sudah pernah disisir */
-    --vision-ring:#E0862B;
+        --search-active: #6ea8fe; /* jalur aktif saat drone masih menyisir */
+        --search-trail: #5eb5c7; /* jejak area yang sudah pernah disisir */
+        --vision-ring: #e0862b;
 
-    /* BARU — memori posisi terakhir: warna jalur saat drone bergerak
+        /* BARU — memori posisi terakhir: warna jalur saat drone bergerak
        menuju titik terakhir tank terlihat (beda dari jalur kejar & jalur
        sisir), plus warna penanda titik itu sendiri di peta. */
-    --investigate-path:#D9A441;
-    --lkp-marker:#F0A04B;
+        --investigate-path: #d9a441;
+        --lkp-marker: #f0a04b;
 
-    /* BARU — gradien warna gelombang ekspansi UCS saat sekuens pemindaian
+        /* BARU — gradien warna gelombang ekspansi UCS saat sekuens pemindaian
        awal: sel yang biaya tempuhnya RENDAH (dekat dari drone) memakai
        warna "near", sel yang biaya tempuhnya TINGGI (jauh) memakai warna
        "far", supaya arah & jarak penyebaran rutenya terlihat jelas —
        bukan cuma satu warna rata yang menyatu semua. */
-    --scan-wave-near:#8FD9E8;
-    --scan-wave-far:#5B3FA0;
-    /* warna kotak penanda "ujung gelombang saat ini" (sel yang BARU SAJA
+        --scan-wave-near: #8fd9e8;
+        --scan-wave-far: #5b3fa0;
+        /* warna kotak penanda "ujung gelombang saat ini" (sel yang BARU SAJA
        diekspansi di tick animasi terakhir) supaya arah rambatannya jelas */
-    --scan-frontier:#E0862B;
-  }
+        --scan-frontier: #e0862b;
+      }
 
-  *{ box-sizing:border-box; }
-  body{
-    margin:0; min-height:100vh; background:var(--bg-deep); color:var(--text-cream);
-    font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
-    display:flex; align-items:flex-start; justify-content:center; padding:28px 16px;
-  }
-  .app{ display:flex; gap:22px; flex-wrap:wrap; max-width:1040px; }
-  .stage{ display:flex; flex-direction:column; gap:10px; }
-  h1{ font-size:20px; font-weight:600; margin:0 0 2px 0; }
-  .subtitle{ color:var(--text-dim); font-size:13px; margin:0 0 4px 0; max-width:640px; line-height:1.5; }
-  canvas{ border-radius:10px; border:1px solid var(--panel-border); display:block; background:var(--dirt); }
-  .legend{ display:flex; flex-wrap:wrap; gap:12px 14px; font-size:12px; color:var(--text-dim); }
-  .legend span{ display:inline-flex; align-items:center; gap:6px; }
-  .swatch{ width:12px;height:12px;border-radius:3px;display:inline-block; }
-  .panel{
-    width:320px; background:var(--panel); border:1px solid var(--panel-border);
-    border-radius:12px; padding:18px; display:flex; flex-direction:column; gap:16px;
-  }
-  .panel h2{ font-size:13px; color:var(--text-dim); margin:0 0 8px 0; font-weight:600; }
-  .field{ display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
-  label{ font-size:13px; color:var(--text-cream); }
-  select, button{
-    font-family:inherit; font-size:13px; border-radius:7px; border:1px solid var(--panel-border);
-    padding:8px 10px; background:#2B2720; color:var(--text-cream); cursor:pointer;
-  }
-  select:disabled{ opacity:0.45; cursor:not-allowed; }
-  button.primary{ background:var(--accent-signal); color:#1B1A15; border:none; font-weight:600; }
-  button.primary:hover{ background:var(--accent-signal-hover); }
-  button:hover:not(:disabled):not(.primary){ border-color:var(--accent-signal); }
-  .row{ display:flex; gap:8px; }
-  .row button{ flex:1; }
-  .checkbox-row{ display:flex; align-items:center; gap:8px; font-size:13px; }
-  .stats{
-    font-family:'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size:12.5px;
-    line-height:1.7; background:#161510; border:1px solid var(--panel-border); border-radius:8px;
-    padding:10px 12px; color:var(--text-cream); white-space:pre-wrap;
-  }
-  .status{
-    font-size:13px; padding:8px 10px; border-radius:7px; background:#161510;
-    border:1px solid var(--panel-border); color:var(--text-dim); min-height:16px;
-  }
-  .status.caught{ color:var(--danger); border-color:var(--danger); }
-  table.exp{ width:100%; border-collapse:collapse; font-size:12px; font-family:'SFMono-Regular', Consolas, monospace; }
-  table.exp th, table.exp td{ text-align:left; padding:5px 6px; border-bottom:1px solid var(--panel-border); }
-  table.exp th{ color:var(--text-dim); font-weight:600; }
-  table.exp tr.best td{ color:var(--accent-signal-hover); font-weight:600; }
-  .note{ font-size:12px; color:var(--text-dim); line-height:1.6; }
-</style>
-</head>
-<body>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg-deep);
+        color: var(--text-cream);
+        font-family:
+          "Segoe UI",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 28px 16px;
+      }
+      .app {
+        display: flex;
+        gap: 22px;
+        flex-wrap: wrap;
+        max-width: 1040px;
+      }
+      .stage {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin: 0 0 2px 0;
+      }
+      .subtitle {
+        color: var(--text-dim);
+        font-size: 13px;
+        margin: 0 0 4px 0;
+        max-width: 640px;
+        line-height: 1.5;
+      }
+      canvas {
+        border-radius: 10px;
+        border: 1px solid var(--panel-border);
+        display: block;
+        background: var(--dirt);
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 14px;
+        font-size: 12px;
+        color: var(--text-dim);
+      }
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        display: inline-block;
+      }
+      .panel {
+        width: 320px;
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 12px;
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .panel h2 {
+        font-size: 13px;
+        color: var(--text-dim);
+        margin: 0 0 8px 0;
+        font-weight: 600;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      label {
+        font-size: 13px;
+        color: var(--text-cream);
+      }
+      select,
+      button {
+        font-family: inherit;
+        font-size: 13px;
+        border-radius: 7px;
+        border: 1px solid var(--panel-border);
+        padding: 8px 10px;
+        background: #2b2720;
+        color: var(--text-cream);
+        cursor: pointer;
+      }
+      select:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      button.primary {
+        background: var(--accent-signal);
+        color: #1b1a15;
+        border: none;
+        font-weight: 600;
+      }
+      button.primary:hover {
+        background: var(--accent-signal-hover);
+      }
+      button:hover:not(:disabled):not(.primary) {
+        border-color: var(--accent-signal);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .row button {
+        flex: 1;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+      }
+      .stats {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 12.5px;
+        line-height: 1.7;
+        background: #161510;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        color: var(--text-cream);
+        white-space: pre-wrap;
+      }
+      .status {
+        font-size: 13px;
+        padding: 8px 10px;
+        border-radius: 7px;
+        background: #161510;
+        border: 1px solid var(--panel-border);
+        color: var(--text-dim);
+        min-height: 16px;
+      }
+      .status.caught {
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+      table.exp {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+      }
+      table.exp th,
+      table.exp td {
+        text-align: left;
+        padding: 5px 6px;
+        border-bottom: 1px solid var(--panel-border);
+      }
+      table.exp th {
+        color: var(--text-dim);
+        font-weight: 600;
+      }
+      table.exp tr.best td {
+        color: var(--accent-signal-hover);
+        font-weight: 600;
+      }
+      .note {
+        font-size: 12px;
+        color: var(--text-dim);
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="stage">
+        <h1>Tank vs Drone — UCS vs A* Simulasi Ukraina</h1>
+        <canvas id="board" width="660" height="480"></canvas>
 
-<div class="app">
+        <div class="legend">
+          <span style="width: 100%; color: var(--text-cream)"
+            >Angka di pojok tiap tile = biaya tempuh DRONE (biaya 1/tanah tidak
+            ditulis); "X" = terhalang total.</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--tank)"></i>Tank
+            (pemain)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--drone)"></i>Drone
+            (pengejar)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--tree-canopy)"></i>Pohon
+            — tank terhalang, drone lewat (biaya 4)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--rock)"></i>Bebatuan —
+            tank terhalang, drone lewat (biaya 2)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--river)"></i>Sungai —
+            tank terhalang, drone lewat (biaya 2)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--bridge)"></i>Jembatan
+            (biaya 0, tank & drone)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--artillery-body)"></i
+            >Artileri anti-udara — terhalang tank & drone</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--camp-tent)"></i>Kamp
+            tentara — tank terhalang, drone lewat (biaya 6)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--ruin-wall)"></i>Bangunan
+            runtuh — tank terhalang, drone lewat (biaya 2)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--path)"></i>Jalur kejar
+            (tahu posisi tank)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--scan-wave-near)"></i
+            >Tersisir — biaya rendah (dekat)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--scan-wave-far)"></i
+            >Tersisir — biaya tinggi (jauh)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--scan-frontier)"></i
+            >Ujung gelombang saat ini</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--search-active)"></i
+            >Jalur pencarian (belum tahu)</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--search-trail)"></i>Jejak
+            area tersisir</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--investigate-path)"></i
+            >Jalur menuju posisi terakhir</span
+          >
+          <span
+            ><i class="swatch" style="background: var(--lkp-marker)"></i>Penanda
+            posisi terakhir tank</span
+          >
+        </div>
 
-  <div class="stage">
-    <h1>Tank vs Drone — UCS vs A* (dengan Fog of War)</h1>
-    <p class="subtitle">
-      Saat dimulai, drone (lingkaran merah) melakukan <b>pemindaian awal</b> dari posisi startnya
-      untuk menemukan posisi AWAL tank — divisualisasikan sebagai gelombang UCS yang menyebar
-      pelan-pelan (sengaja diperlambat, karena inti simulasi ini memang cara kerja algoritmanya).
-      Tiap tile yang sudah "disisir" diberi warna gradien: biru muda untuk yang biayanya RENDAH
-      (dekat dari drone), berangsur ke ungu untuk yang biayanya TINGGI (jauh), dan kotak oranye
-      menandai ujung gelombang yang baru saja terbentuk — supaya arah & jangkauan rambatan UCS
-      terlihat jelas sel demi sel. Setelah tank "ketemu", penanda yang tidak terpakai lalu
-      dihapus, dan drone menghitung jalur NYATA dengan A* (mencari jalur alternatif kalau ada
-      halangan), lalu langsung bergerak ke sana — mengabaikan pergerakan tank selama perjalanan
-      ini. Baru setelah tiba, kalau tank sudah pindah, lingkaran radius pandang drone aktif dan
-      mode menyisir (fog of war) normal dimulai: drone menyisir memakai pola tetap (garis biru)
-      sampai tank masuk radius pandangnya, mengejar dengan algoritma di panel kanan (garis krem)
-      sambil menghitung ulang jalur tiap giliran, dan kalau kontak terputus ia mengingat posisi
-      terakhir tank (garis kuning kecoklatan) dan memeriksa titik itu dulu sebelum kembali
-      menyisir — dilanjutkan dari titik terdekat, bukan balik ke posisi awal drone.
-    </p>
+        <div class="status" id="statusBox">
+          Drone melakukan pemindaian awal untuk menemukan posisi awal tank...
+        </div>
+      </div>
 
-    <canvas id="board" width="660" height="480"></canvas>
+      <div class="panel">
+        <div>
+          <h2>Kontrol Algoritma Drone</h2>
+          <div class="field">
+            <label for="algoSelect">Algoritma pencarian</label>
+            <select id="algoSelect">
+              <option value="ucs">UCS (Uniform Cost Search)</option>
+              <option value="astar" selected>A* (A-Star)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="heurSelect">Heuristik (khusus A*)</label>
+            <select id="heurSelect">
+              <option value="manhattan" selected>
+                Manhattan (|dr| + |dc|)
+              </option>
+              <option value="euclidean">Euclidean (jarak lurus)</option>
+              <option value="chebyshev">Chebyshev (max(|dr|,|dc|))</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="visionRadius">Radius pandang drone (sel)</label>
+            <select id="visionRadius">
+              <option value="2">2 — sangat pendek</option>
+              <option value="3">3 — pendek</option>
+              <option value="4" selected>4 — sedang</option>
+              <option value="6">6 — jauh</option>
+              <option value="8">8 — sangat jauh</option>
+            </select>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="autoChase" />
+            <label for="autoChase">Drone bergerak otomatis tiap 450ms</label>
+          </div>
+          <div class="field">
+            <label>Status drone saat ini</label>
+            <div class="stats" id="droneStateBox" style="min-height: auto">
+              MEMINDAI (mencari posisi awal tank)
+            </div>
+          </div>
+        </div>
 
-    <div class="legend">
-      <span style="width:100%; color:var(--text-cream);">Angka di pojok tiap tile = biaya tempuh DRONE (biaya 1/tanah tidak ditulis); "X" = terhalang total.</span>
-      <span><i class="swatch" style="background:var(--tank)"></i>Tank (pemain)</span>
-      <span><i class="swatch" style="background:var(--drone)"></i>Drone (pengejar)</span>
-      <span><i class="swatch" style="background:var(--tree-canopy)"></i>Pohon — tank terhalang, drone lewat (biaya 4)</span>
-      <span><i class="swatch" style="background:var(--rock)"></i>Bebatuan — tank terhalang, drone lewat (biaya 2)</span>
-      <span><i class="swatch" style="background:var(--river)"></i>Sungai — tank terhalang, drone lewat (biaya 2)</span>
-      <span><i class="swatch" style="background:var(--bridge)"></i>Jembatan (biaya 0, tank & drone)</span>
-      <span><i class="swatch" style="background:var(--artillery-body)"></i>Artileri anti-udara — terhalang tank & drone</span>
-      <span><i class="swatch" style="background:var(--camp-tent)"></i>Kamp tentara — tank terhalang, drone lewat (biaya 6)</span>
-      <span><i class="swatch" style="background:var(--ruin-wall)"></i>Bangunan runtuh — tank terhalang, drone lewat (biaya 2)</span>
-      <span><i class="swatch" style="background:var(--path)"></i>Jalur kejar (tahu posisi tank)</span>
-      <span><i class="swatch" style="background:var(--scan-wave-near)"></i>Tersisir — biaya rendah (dekat)</span>
-      <span><i class="swatch" style="background:var(--scan-wave-far)"></i>Tersisir — biaya tinggi (jauh)</span>
-      <span><i class="swatch" style="background:var(--scan-frontier)"></i>Ujung gelombang saat ini</span>
-      <span><i class="swatch" style="background:var(--search-active)"></i>Jalur pencarian (belum tahu)</span>
-      <span><i class="swatch" style="background:var(--search-trail)"></i>Jejak area tersisir</span>
-      <span><i class="swatch" style="background:var(--investigate-path)"></i>Jalur menuju posisi terakhir</span>
-      <span><i class="swatch" style="background:var(--lkp-marker)"></i>Penanda posisi terakhir tank</span>
+        <div class="row">
+          <button class="primary" id="btnRandomMap">Acak Medan</button>
+          <button id="btnResetPos">Reset Posisi</button>
+        </div>
+
+        <div>
+          <h2>Statistik Pencarian Terakhir</h2>
+          <div class="stats" id="statsBox">Belum ada pencarian dijalankan.</div>
+        </div>
+
+        <div>
+          <h2>Eksperimen Perbandingan Heuristik</h2>
+          <button id="btnExperiment">Jalankan Eksperimen</button>
+          <div id="expResult" style="margin-top: 8px"></div>
+          <p class="note" id="expNote"></p>
+        </div>
+      </div>
     </div>
 
-    <div class="status" id="statusBox">Drone melakukan pemindaian awal untuk menemukan posisi awal tank...</div>
-  </div>
-
-  <div class="panel">
-    <div>
-      <h2>Kontrol Algoritma Drone</h2>
-      <div class="field">
-        <label for="algoSelect">Algoritma pencarian</label>
-        <select id="algoSelect">
-          <option value="ucs">UCS (Uniform Cost Search)</option>
-          <option value="astar" selected>A* (A-Star)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="heurSelect">Heuristik (khusus A*)</label>
-        <select id="heurSelect">
-          <option value="manhattan" selected>Manhattan (|dr| + |dc|)</option>
-          <option value="euclidean">Euclidean (jarak lurus)</option>
-          <option value="chebyshev">Chebyshev (max(|dr|,|dc|))</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="visionRadius">Radius pandang drone (sel)</label>
-        <select id="visionRadius">
-          <option value="2">2 — sangat pendek</option>
-          <option value="3">3 — pendek</option>
-          <option value="4" selected>4 — sedang</option>
-          <option value="6">6 — jauh</option>
-          <option value="8">8 — sangat jauh</option>
-        </select>
-      </div>
-      <div class="checkbox-row">
-        <input type="checkbox" id="autoChase">
-        <label for="autoChase">Drone bergerak otomatis tiap 450ms</label>
-      </div>
-      <div class="field">
-        <label>Status drone saat ini</label>
-        <div class="stats" id="droneStateBox" style="min-height:auto;">MEMINDAI (mencari posisi awal tank)</div>
-      </div>
-    </div>
-
-    <div class="row">
-      <button class="primary" id="btnRandomMap">Acak Medan</button>
-      <button id="btnResetPos">Reset Posisi</button>
-    </div>
-
-    <div>
-      <h2>Statistik Pencarian Terakhir</h2>
-      <div class="stats" id="statsBox">Belum ada pencarian dijalankan.</div>
-    </div>
-
-    <div>
-      <h2>Eksperimen Perbandingan Heuristik</h2>
-      <button id="btnExperiment">Jalankan Eksperimen</button>
-      <div id="expResult" style="margin-top:8px;"></div>
-      <p class="note" id="expNote"></p>
-    </div>
-  </div>
-
-</div>
-
-<script>
-/* =====================================================================
+    <script>
+      /* =====================================================================
    BAGIAN 1 — KONSTANTA DUNIA & JENIS MEDAN
    =====================================================================
    Setiap sel grid punya kode medan yang menentukan apakah bisa dilewati
    dan berapa biayanya. Biaya inilah yang menjadi g(n) di UCS maupun A*.
 */
-const ROWS = 16;
-const COLS = 22;
-const CELL = 30;
+      const ROWS = 16;
+      const COLS = 22;
+      const CELL = 30;
 
-const DIRT      = 0; // tanah terbuka, biaya 1
-const TREE      = 1; // pohon, terblokir
-const ROCK      = 2; // bebatuan, terblokir
-const RIVER     = 3; // sungai, terblokir kecuali di sel jembatan
-const BRIDGE    = 4; // jembatan, biaya 3
-const ARTILLERY = 5; // artileri musuh yang ditinggalkan, terblokir
-const CAMP      = 6; // kamp tentara (blok 2x2), terblokir
-const RUIN      = 7; // bangunan runtuh (blok 2x2), terblokir
+      const DIRT = 0; // tanah terbuka, biaya 1
+      const TREE = 1; // pohon, terblokir
+      const ROCK = 2; // bebatuan, terblokir
+      const RIVER = 3; // sungai, terblokir kecuali di sel jembatan
+      const BRIDGE = 4; // jembatan, biaya 3
+      const ARTILLERY = 5; // artileri musuh yang ditinggalkan, terblokir
+      const CAMP = 6; // kamp tentara (blok 2x2), terblokir
+      const RUIN = 7; // bangunan runtuh (blok 2x2), terblokir
 
-// BARU — biaya & keterlewatan sekarang dibedakan per unit. Tank berjalan
-// di darat sehingga tetap terhalang oleh medan padat/basah apapun. Drone
-// terbang di atasnya, jadi bebatuan/reruntuhan/sungai tetap bisa DILEWATI
-// (dengan biaya tambahan karena harus naik/hati-hati), sementara artileri
-// di peta ini adalah artileri ANTI-UDARA — tetap menghalangi drone secara
-// mutlak, walau tidak menghalangi tank di darat.
-const TANK_TERRAIN_COST  = { [DIRT]: 1, [BRIDGE]: 0 };
-const DRONE_TERRAIN_COST = {
-  [DIRT]: 1, [BRIDGE]: 0,
-  [ROCK]: 2,   // terbang melewati bebatuan — sedikit lebih lambat/hati-hati
-  [RUIN]: 2,   // terbang melewati reruntuhan — sama seperti bebatuan
-  [RIVER]: 2,  // terbang melintasi sungai — tidak perlu jembatan
-  [TREE]: 4,   // harus naik di atas kanopi pohon — biaya jauh lebih tinggi
-  [CAMP]: 6    // melintas di atas kamp tentara — biaya TERTINGGI, ada
-               // risiko tentara yang berkemah di situ membawa senjata
-               // anti-udara genggam dan menembak drone
-};
+      // BARU — biaya & keterlewatan sekarang dibedakan per unit. Tank berjalan
+      // di darat sehingga tetap terhalang oleh medan padat/basah apapun. Drone
+      // terbang di atasnya, jadi bebatuan/reruntuhan/sungai tetap bisa DILEWATI
+      // (dengan biaya tambahan karena harus naik/hati-hati), sementara artileri
+      // di peta ini adalah artileri ANTI-UDARA — tetap menghalangi drone secara
+      // mutlak, walau tidak menghalangi tank di darat.
+      const TANK_TERRAIN_COST = { [DIRT]: 1, [BRIDGE]: 0 };
+      const DRONE_TERRAIN_COST = {
+        [DIRT]: 1,
+        [BRIDGE]: 0,
+        [ROCK]: 2, // terbang melewati bebatuan — sedikit lebih lambat/hati-hati
+        [RUIN]: 2, // terbang melewati reruntuhan — sama seperti bebatuan
+        [RIVER]: 2, // terbang melintasi sungai — tidak perlu jembatan
+        [TREE]: 4, // harus naik di atas kanopi pohon — biaya jauh lebih tinggi
+        [CAMP]: 6, // melintas di atas kamp tentara — biaya TERTINGGI, ada
+        // risiko tentara yang berkemah di situ membawa senjata
+        // anti-udara genggam dan menembak drone
+      };
 
-// isBlocked() = aturan TANK (jalan darat): tetap seperti semula, dipakai
-// untuk pergerakan tank & validasi keterhubungan peta.
-function isBlocked(t){
-  return t === TREE || t === ROCK || t === RIVER || t === ARTILLERY || t === CAMP || t === RUIN;
-}
+      // isBlocked() = aturan TANK (jalan darat): tetap seperti semula, dipakai
+      // untuk pergerakan tank & validasi keterhubungan peta.
+      function isBlocked(t) {
+        return (
+          t === TREE ||
+          t === ROCK ||
+          t === RIVER ||
+          t === ARTILLERY ||
+          t === CAMP ||
+          t === RUIN
+        );
+      }
 
-// BARU — aturan DRONE (terbang): hanya artileri anti-udara yang benar-benar
-// menghalangi; sisanya bisa dilewati (dengan biaya di DRONE_TERRAIN_COST).
-function isBlockedForDrone(t){
-  return t === ARTILLERY;
-}
+      // BARU — aturan DRONE (terbang): hanya artileri anti-udara yang benar-benar
+      // menghalangi; sisanya bisa dilewati (dengan biaya di DRONE_TERRAIN_COST).
+      function isBlockedForDrone(t) {
+        return t === ARTILLERY;
+      }
 
-/* BARU — objek padat/tinggi yang menghalangi PANDANGAN drone (dipakai untuk
+      /* BARU — objek padat/tinggi yang menghalangi PANDANGAN drone (dipakai untuk
    fog of war). Sungai & area artileri terbuka tidak menghalangi pandang
    walau tetap menghalangi gerak. */
-const SIGHT_BLOCKERS = new Set([TREE, ROCK, CAMP, RUIN]);
-function blocksSight(t){ return SIGHT_BLOCKERS.has(t); }
+      const SIGHT_BLOCKERS = new Set([TREE, ROCK, CAMP, RUIN]);
+      function blocksSight(t) {
+        return SIGHT_BLOCKERS.has(t);
+      }
 
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 2 — UTILITAS ACAK & PEMBANGKIT MEDAN PERANG
    =====================================================================
    Urutan pembuatan: sungai berkelok + 2 jembatan -> pohon acak ->
@@ -287,332 +469,414 @@ function blocksSight(t){ return SIGHT_BLOCKERS.has(t); }
    2 bangunan runtuh (blok 2x2) -> validasi keterhubungan lewat BFS,
    ulangi jika titik tank & drone terputus.
 */
-function randInt(min, max){ return Math.floor(Math.random() * (max - min + 1)) + min; }
-function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
-
-// BARU — sungai sekarang dibangun sebagai random walk dari baris paling
-// atas ke baris paling bawah, dengan 5 pilihan arah per langkah — turun,
-// diagonal turun-kiri, diagonal turun-kanan, horizontal kiri, horizontal
-// kanan — dan KELIMANYA punya peluang muncul yang SAMA RATA (masing-masing
-// 1/5) di tiap langkah, supaya kelokan sungai benar-benar bervariasi dan
-// tidak didominasi arah tertentu. Baris yang belum tersentuh sampai
-// random walk berakhir ditambal lurus ke bawah (jaring pengaman) supaya
-// sungai tetap membelah peta dari atas sampai bawah.
-function generateRiverPath(){
-  const cells = [];
-  const visited = new Set();
-  let r = 0;
-  let c = clamp(Math.floor(COLS / 2) + randInt(-2, 2), 2, COLS - 3);
-  cells.push({ r, c }); visited.add(r + ',' + c);
-
-  const dirPool = [
-    { dr: 1, dc: 0 },                                     // vertikal (turun)
-    { dr: 1, dc: -1 }, { dr: 1, dc: 1 },                   // diagonal
-    { dr: 0, dc: -1 }, { dr: 0, dc: 1 }                    // horizontal
-  ];
-
-  let guard = ROWS * COLS * 3;
-  while(r < ROWS - 1 && guard > 0){
-    guard--;
-    const move = dirPool[randInt(0, dirPool.length - 1)];
-    const nr = clamp(r + move.dr, 0, ROWS - 1);
-    const nc = clamp(c + move.dc, 2, COLS - 3);
-    const k = nr + ',' + nc;
-    if(!visited.has(k)){ visited.add(k); cells.push({ r: nr, c: nc }); }
-    r = nr; c = nc;
-  }
-  // jaring pengaman: kalau random walk berhenti sebelum baris terakhir
-  // (guard habis), teruskan lurus ke bawah supaya sungai tetap membelah
-  // seluruh tinggi peta.
-  while(r < ROWS - 1){
-    r++;
-    const k = r + ',' + c;
-    if(!visited.has(k)){ visited.add(k); cells.push({ r, c }); }
-  }
-  return cells;
-}
-
-// Memilih baris-baris jembatan dari sel-sel sungai yang sudah dibangun.
-// Karena satu baris bisa berisi beberapa sel sungai berjajar (akibat
-// langkah horizontal random walk), sel-sel dikelompokkan per baris dulu.
-// PENTING: begitu sebuah baris terpilih jadi titik jembatan, SELURUH sel
-// sungai di baris itu ikut dijadikan jembatan (bukan cuma 1 sel acak) —
-// supaya lebar jembatan menyesuaikan lebar sungai di titik itu, dan tidak
-// ada lagi sel sungai tersisa di tengah yang membuat darat -> jembatan ->
-// balik lagi ke air. "count" di sini berarti jumlah baris/titik
-// penyeberangan yang dibuat, bukan jumlah sel jembatan individual.
-function pickBridgeCells(riverCells, count){
-  const byRow = new Map();
-  for(const cell of riverCells){
-    if(cell.r <= 0 || cell.r >= ROWS - 1) continue; // hindari baris tepi
-    if(!byRow.has(cell.r)) byRow.set(cell.r, []);
-    byRow.get(cell.r).push(cell);
-  }
-  const rowsPool = [...byRow.keys()];
-  const bridges = [];
-  while(bridges.length < count && rowsPool.length){
-    const idx = randInt(0, rowsPool.length - 1);
-    const row = rowsPool.splice(idx, 1)[0];
-    const segment = byRow.get(row); // seluruh sel sungai di baris ini
-    bridges.push(...segment);
-  }
-  return bridges;
-}
-
-// BARU — "zona aman" di sekeliling tiap jembatan (sel jembatan + 8
-// tetangganya) supaya tidak ada satupun rintangan (pohon/batu/artileri/
-// kamp/reruntuhan) ditaruh menempel jembatan dan menghalangi jalan masuk
-// ke sana.
-function buildBridgeExclusionZone(bridgeCells){
-  const zone = new Set();
-  for(const b of bridgeCells){
-    for(let dr = -1; dr <= 1; dr++){
-      for(let dc = -1; dc <= 1; dc++){
-        const nr = b.r + dr, nc = b.c + dc;
-        if(nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) zone.add(nr + ',' + nc);
+      function randInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
       }
-    }
-  }
-  return zone;
-}
-
-function canPlaceBlock2x2(grid, r, c, exclude){
-  if(r + 1 >= ROWS || c + 1 >= COLS) return false;
-  for(let dr = 0; dr <= 1; dr++){
-    for(let dc = 0; dc <= 1; dc++){
-      if(grid[r+dr][c+dc] !== DIRT) return false;
-      if(exclude && exclude.has((r+dr) + ',' + (c+dc))) return false;
-    }
-  }
-  return true;
-}
-
-function isReachable(grid, start, goal){
-  const visited = Array.from({length: ROWS}, () => Array(COLS).fill(false));
-  const queue = [start];
-  visited[start.r][start.c] = true;
-  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
-  while(queue.length){
-    const cur = queue.shift();
-    if(cur.r === goal.r && cur.c === goal.c) return true;
-    for(const [dr,dc] of dirs){
-      const nr = cur.r + dr, nc = cur.c + dc;
-      if(nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
-      if(visited[nr][nc]) continue;
-      if(isBlocked(grid[nr][nc])) continue;
-      visited[nr][nc] = true;
-      queue.push({ r: nr, c: nc });
-    }
-  }
-  return false;
-}
-
-function generateMap(startPos, goalPos){
-  let grid, attempt = 0;
-  do{
-    attempt++;
-    grid = Array.from({length: ROWS}, () => Array(COLS).fill(DIRT));
-
-    // 1) sungai berkelok (random walk: turun/diagonal/horizontal)
-    const riverCells = generateRiverPath();
-    for(const cell of riverCells) grid[cell.r][cell.c] = RIVER;
-
-    // 2) dua jembatan
-    const bridgeCells = pickBridgeCells(riverCells, 2);
-    for(const b of bridgeCells) grid[b.r][b.c] = BRIDGE;
-
-    // BARU — zona di sekeliling jembatan (sel jembatan + 8 tetangga) yang
-    // harus tetap bersih dari rintangan apapun, supaya jembatan selalu
-    // mudah didekati dari darat.
-    const bridgeZone = buildBridgeExclusionZone(bridgeCells);
-
-    // 3) pohon (~8%)
-    let treeBudget = Math.floor(ROWS * COLS * 0.08);
-    let treeSafety = treeBudget * 40;
-    while(treeBudget > 0 && treeSafety > 0){
-      treeSafety--;
-      const r = randInt(0, ROWS - 1), c = randInt(0, COLS - 1);
-      if(grid[r][c] === DIRT && !bridgeZone.has(r + ',' + c)){ grid[r][c] = TREE; treeBudget--; }
-    }
-
-    // 4) bebatuan (~6%)
-    let rockBudget = Math.floor(ROWS * COLS * 0.06);
-    let rockSafety = rockBudget * 40;
-    while(rockBudget > 0 && rockSafety > 0){
-      rockSafety--;
-      const r = randInt(0, ROWS - 1), c = randInt(0, COLS - 1);
-      if(grid[r][c] === DIRT && !bridgeZone.has(r + ',' + c)){ grid[r][c] = ROCK; rockBudget--; }
-    }
-
-    // 5) artileri musuh tak terpakai — 5 unit tersebar satu sel
-    let artilleryBudget = 5, artillerySafety = 400;
-    while(artilleryBudget > 0 && artillerySafety > 0){
-      artillerySafety--;
-      const r = randInt(0, ROWS - 1), c = randInt(0, COLS - 1);
-      if(grid[r][c] === DIRT && !bridgeZone.has(r + ',' + c)){ grid[r][c] = ARTILLERY; artilleryBudget--; }
-    }
-
-    // 6) kamp tentara — 2 blok 2x2
-    let campBudget = 2, safety = 400;
-    while(campBudget > 0 && safety > 0){
-      safety--;
-      const r = randInt(0, ROWS - 2), c = randInt(0, COLS - 2);
-      if(canPlaceBlock2x2(grid, r, c, bridgeZone)){
-        grid[r][c] = CAMP; grid[r][c+1] = CAMP;
-        grid[r+1][c] = CAMP; grid[r+1][c+1] = CAMP;
-        campBudget--;
+      function clamp(v, lo, hi) {
+        return Math.max(lo, Math.min(hi, v));
       }
-    }
 
-    // 7) bangunan runtuh — 2 blok 2x2
-    let ruinBudget = 2; safety = 400;
-    while(ruinBudget > 0 && safety > 0){
-      safety--;
-      const r = randInt(0, ROWS - 2), c = randInt(0, COLS - 2);
-      if(canPlaceBlock2x2(grid, r, c, bridgeZone)){
-        grid[r][c] = RUIN; grid[r][c+1] = RUIN;
-        grid[r+1][c] = RUIN; grid[r+1][c+1] = RUIN;
-        ruinBudget--;
+      // BARU — sungai sekarang dibangun sebagai random walk dari baris paling
+      // atas ke baris paling bawah, dengan 5 pilihan arah per langkah — turun,
+      // diagonal turun-kiri, diagonal turun-kanan, horizontal kiri, horizontal
+      // kanan — dan KELIMANYA punya peluang muncul yang SAMA RATA (masing-masing
+      // 1/5) di tiap langkah, supaya kelokan sungai benar-benar bervariasi dan
+      // tidak didominasi arah tertentu. Baris yang belum tersentuh sampai
+      // random walk berakhir ditambal lurus ke bawah (jaring pengaman) supaya
+      // sungai tetap membelah peta dari atas sampai bawah.
+      function generateRiverPath() {
+        const cells = [];
+        const visited = new Set();
+        let r = 0;
+        let c = clamp(Math.floor(COLS / 2) + randInt(-2, 2), 2, COLS - 3);
+        cells.push({ r, c });
+        visited.add(r + "," + c);
+
+        const dirPool = [
+          { dr: 1, dc: 0 }, // vertikal (turun)
+          { dr: 1, dc: -1 },
+          { dr: 1, dc: 1 }, // diagonal
+          { dr: 0, dc: -1 },
+          { dr: 0, dc: 1 }, // horizontal
+        ];
+
+        let guard = ROWS * COLS * 3;
+        while (r < ROWS - 1 && guard > 0) {
+          guard--;
+          const move = dirPool[randInt(0, dirPool.length - 1)];
+          const nr = clamp(r + move.dr, 0, ROWS - 1);
+          const nc = clamp(c + move.dc, 2, COLS - 3);
+          const k = nr + "," + nc;
+          if (!visited.has(k)) {
+            visited.add(k);
+            cells.push({ r: nr, c: nc });
+          }
+          r = nr;
+          c = nc;
+        }
+        // jaring pengaman: kalau random walk berhenti sebelum baris terakhir
+        // (guard habis), teruskan lurus ke bawah supaya sungai tetap membelah
+        // seluruh tinggi peta.
+        while (r < ROWS - 1) {
+          r++;
+          const k = r + "," + c;
+          if (!visited.has(k)) {
+            visited.add(k);
+            cells.push({ r, c });
+          }
+        }
+        return cells;
       }
-    }
 
-    // titik awal tank & drone selalu tanah kosong
-    grid[startPos.r][startPos.c] = DIRT;
-    grid[goalPos.r][goalPos.c] = DIRT;
+      // Memilih baris-baris jembatan dari sel-sel sungai yang sudah dibangun.
+      // Karena satu baris bisa berisi beberapa sel sungai berjajar (akibat
+      // langkah horizontal random walk), sel-sel dikelompokkan per baris dulu.
+      // PENTING: begitu sebuah baris terpilih jadi titik jembatan, SELURUH sel
+      // sungai di baris itu ikut dijadikan jembatan (bukan cuma 1 sel acak) —
+      // supaya lebar jembatan menyesuaikan lebar sungai di titik itu, dan tidak
+      // ada lagi sel sungai tersisa di tengah yang membuat darat -> jembatan ->
+      // balik lagi ke air. "count" di sini berarti jumlah baris/titik
+      // penyeberangan yang dibuat, bukan jumlah sel jembatan individual.
+      function pickBridgeCells(riverCells, count) {
+        const byRow = new Map();
+        for (const cell of riverCells) {
+          if (cell.r <= 0 || cell.r >= ROWS - 1) continue; // hindari baris tepi
+          if (!byRow.has(cell.r)) byRow.set(cell.r, []);
+          byRow.get(cell.r).push(cell);
+        }
+        const rowsPool = [...byRow.keys()];
+        const bridges = [];
+        while (bridges.length < count && rowsPool.length) {
+          const idx = randInt(0, rowsPool.length - 1);
+          const row = rowsPool.splice(idx, 1)[0];
+          const segment = byRow.get(row); // seluruh sel sungai di baris ini
+          bridges.push(...segment);
+        }
+        return bridges;
+      }
 
-  } while(!isReachable(grid, startPos, goalPos) && attempt < 25);
+      // BARU — "zona aman" di sekeliling tiap jembatan (sel jembatan + 8
+      // tetangganya) supaya tidak ada satupun rintangan (pohon/batu/artileri/
+      // kamp/reruntuhan) ditaruh menempel jembatan dan menghalangi jalan masuk
+      // ke sana.
+      function buildBridgeExclusionZone(bridgeCells) {
+        const zone = new Set();
+        for (const b of bridgeCells) {
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              const nr = b.r + dr,
+                nc = b.c + dc;
+              if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS)
+                zone.add(nr + "," + nc);
+            }
+          }
+        }
+        return zone;
+      }
 
-  return grid;
-}
+      function canPlaceBlock2x2(grid, r, c, exclude) {
+        if (r + 1 >= ROWS || c + 1 >= COLS) return false;
+        for (let dr = 0; dr <= 1; dr++) {
+          for (let dc = 0; dc <= 1; dc++) {
+            if (grid[r + dr][c + dc] !== DIRT) return false;
+            if (exclude && exclude.has(r + dr + "," + (c + dc))) return false;
+          }
+        }
+        return true;
+      }
 
-// BARU — sebelumnya posisi awal drone SELALU di pojok kiri-atas (1,1) dan
-// tank SELALU di pojok kanan-bawah (ROWS-2, COLS-2). Sekarang keduanya
-// dipilih ACAK dalam area medan (dengan sedikit margin dari tepi supaya
-// tidak menempel dinding), dengan jarak minimum di antara mereka supaya
-// sekuens pemindaian awal & permainan tetap terasa menantang (drone tidak
-// langsung "nempel" di sebelah tank).
-function pickRandomStartPositions(){
-  const margin = 1; // jarak minimum dari tepi peta
-  const minDistance = Math.floor((ROWS + COLS) / 3); // jarak Manhattan minimum drone<->tank
+      function isReachable(grid, start, goal) {
+        const visited = Array.from({ length: ROWS }, () =>
+          Array(COLS).fill(false),
+        );
+        const queue = [start];
+        visited[start.r][start.c] = true;
+        const dirs = [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ];
+        while (queue.length) {
+          const cur = queue.shift();
+          if (cur.r === goal.r && cur.c === goal.c) return true;
+          for (const [dr, dc] of dirs) {
+            const nr = cur.r + dr,
+              nc = cur.c + dc;
+            if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+            if (visited[nr][nc]) continue;
+            if (isBlocked(grid[nr][nc])) continue;
+            visited[nr][nc] = true;
+            queue.push({ r: nr, c: nc });
+          }
+        }
+        return false;
+      }
 
-  let dronePos, tankPos, attempts = 0;
-  do{
-    dronePos = { r: randInt(margin, ROWS - 1 - margin), c: randInt(margin, COLS - 1 - margin) };
-    tankPos  = { r: randInt(margin, ROWS - 1 - margin), c: randInt(margin, COLS - 1 - margin) };
-    attempts++;
-  } while(
-    attempts < 60 &&
-    (Math.abs(dronePos.r - tankPos.r) + Math.abs(dronePos.c - tankPos.c)) < minDistance
-  );
+      function generateMap(startPos, goalPos) {
+        let grid,
+          attempt = 0;
+        do {
+          attempt++;
+          grid = Array.from({ length: ROWS }, () => Array(COLS).fill(DIRT));
 
-  // Jaring pengaman langka: kalau setelah 60 percobaan masih tepat di sel
-  // yang sama (peluangnya sangat kecil), geser tank satu sel supaya tidak
-  // pernah bertumpuk persis di titik yang sama.
-  if(dronePos.r === tankPos.r && dronePos.c === tankPos.c){
-    tankPos = { r: clamp(tankPos.r + 1, margin, ROWS - 1 - margin), c: tankPos.c };
-  }
+          // 1) sungai berkelok (random walk: turun/diagonal/horizontal)
+          const riverCells = generateRiverPath();
+          for (const cell of riverCells) grid[cell.r][cell.c] = RIVER;
 
-  return { dronePos, tankPos };
-}
+          // 2) dua jembatan
+          const bridgeCells = pickBridgeCells(riverCells, 2);
+          for (const b of bridgeCells) grid[b.r][b.c] = BRIDGE;
 
-/* =====================================================================
+          // BARU — zona di sekeliling jembatan (sel jembatan + 8 tetangga) yang
+          // harus tetap bersih dari rintangan apapun, supaya jembatan selalu
+          // mudah didekati dari darat.
+          const bridgeZone = buildBridgeExclusionZone(bridgeCells);
+
+          // 3) pohon (~8%)
+          let treeBudget = Math.floor(ROWS * COLS * 0.08);
+          let treeSafety = treeBudget * 40;
+          while (treeBudget > 0 && treeSafety > 0) {
+            treeSafety--;
+            const r = randInt(0, ROWS - 1),
+              c = randInt(0, COLS - 1);
+            if (grid[r][c] === DIRT && !bridgeZone.has(r + "," + c)) {
+              grid[r][c] = TREE;
+              treeBudget--;
+            }
+          }
+
+          // 4) bebatuan (~6%)
+          let rockBudget = Math.floor(ROWS * COLS * 0.06);
+          let rockSafety = rockBudget * 40;
+          while (rockBudget > 0 && rockSafety > 0) {
+            rockSafety--;
+            const r = randInt(0, ROWS - 1),
+              c = randInt(0, COLS - 1);
+            if (grid[r][c] === DIRT && !bridgeZone.has(r + "," + c)) {
+              grid[r][c] = ROCK;
+              rockBudget--;
+            }
+          }
+
+          // 5) artileri musuh tak terpakai — 5 unit tersebar satu sel
+          let artilleryBudget = 5,
+            artillerySafety = 400;
+          while (artilleryBudget > 0 && artillerySafety > 0) {
+            artillerySafety--;
+            const r = randInt(0, ROWS - 1),
+              c = randInt(0, COLS - 1);
+            if (grid[r][c] === DIRT && !bridgeZone.has(r + "," + c)) {
+              grid[r][c] = ARTILLERY;
+              artilleryBudget--;
+            }
+          }
+
+          // 6) kamp tentara — 2 blok 2x2
+          let campBudget = 2,
+            safety = 400;
+          while (campBudget > 0 && safety > 0) {
+            safety--;
+            const r = randInt(0, ROWS - 2),
+              c = randInt(0, COLS - 2);
+            if (canPlaceBlock2x2(grid, r, c, bridgeZone)) {
+              grid[r][c] = CAMP;
+              grid[r][c + 1] = CAMP;
+              grid[r + 1][c] = CAMP;
+              grid[r + 1][c + 1] = CAMP;
+              campBudget--;
+            }
+          }
+
+          // 7) bangunan runtuh — 2 blok 2x2
+          let ruinBudget = 2;
+          safety = 400;
+          while (ruinBudget > 0 && safety > 0) {
+            safety--;
+            const r = randInt(0, ROWS - 2),
+              c = randInt(0, COLS - 2);
+            if (canPlaceBlock2x2(grid, r, c, bridgeZone)) {
+              grid[r][c] = RUIN;
+              grid[r][c + 1] = RUIN;
+              grid[r + 1][c] = RUIN;
+              grid[r + 1][c + 1] = RUIN;
+              ruinBudget--;
+            }
+          }
+
+          // titik awal tank & drone selalu tanah kosong
+          grid[startPos.r][startPos.c] = DIRT;
+          grid[goalPos.r][goalPos.c] = DIRT;
+        } while (!isReachable(grid, startPos, goalPos) && attempt < 25);
+
+        return grid;
+      }
+
+      // BARU — sebelumnya posisi awal drone SELALU di pojok kiri-atas (1,1) dan
+      // tank SELALU di pojok kanan-bawah (ROWS-2, COLS-2). Sekarang keduanya
+      // dipilih ACAK dalam area medan (dengan sedikit margin dari tepi supaya
+      // tidak menempel dinding), dengan jarak minimum di antara mereka supaya
+      // sekuens pemindaian awal & permainan tetap terasa menantang (drone tidak
+      // langsung "nempel" di sebelah tank).
+      function pickRandomStartPositions() {
+        const margin = 1; // jarak minimum dari tepi peta
+        const minDistance = Math.floor((ROWS + COLS) / 3); // jarak Manhattan minimum drone<->tank
+
+        let dronePos,
+          tankPos,
+          attempts = 0;
+        do {
+          dronePos = {
+            r: randInt(margin, ROWS - 1 - margin),
+            c: randInt(margin, COLS - 1 - margin),
+          };
+          tankPos = {
+            r: randInt(margin, ROWS - 1 - margin),
+            c: randInt(margin, COLS - 1 - margin),
+          };
+          attempts++;
+        } while (
+          attempts < 60 &&
+          Math.abs(dronePos.r - tankPos.r) + Math.abs(dronePos.c - tankPos.c) <
+            minDistance
+        );
+
+        // Jaring pengaman langka: kalau setelah 60 percobaan masih tepat di sel
+        // yang sama (peluangnya sangat kecil), geser tank satu sel supaya tidak
+        // pernah bertumpuk persis di titik yang sama.
+        if (dronePos.r === tankPos.r && dronePos.c === tankPos.c) {
+          tankPos = {
+            r: clamp(tankPos.r + 1, margin, ROWS - 1 - margin),
+            c: tankPos.c,
+          };
+        }
+
+        return { dronePos, tankPos };
+      }
+
+      /* =====================================================================
    BAGIAN 3 — ALGORITMA PENCARIAN: UCS & A* DALAM SATU FUNGSI
    =====================================================================
    UCS adalah kasus khusus A* dengan h(n) = 0 untuk semua node, jadi satu
    fungsi search() melayani kedua algoritma tinggal ganti heuristiknya.
    f(n) = g(n) + h(n)
 */
-function key(node){ return node.r + ',' + node.c; }
-
-function neighbors(node, grid){
-  // BARU — urutan arah sengaja atas, kanan, kiri, bawah: saat beberapa
-  // node punya biaya (f) sama persis, urutan inilah yang menentukan mana
-  // yang diekspansi lebih dulu, sehingga animasi gelombang pemindaian
-  // terlihat menyebar rapi "atas-kanan-kiri-bawah dulu, baru melebar".
-  const dirs = [[-1,0],[0,1],[0,-1],[1,0]];
-  const result = [];
-  for(const [dr, dc] of dirs){
-    const nr = node.r + dr, nc = node.c + dc;
-    if(nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
-    const terrain = grid[nr][nc];
-    // BARU — search() ini dipakai KHUSUS untuk drone (mengejar/menyisir),
-    // jadi pakai aturan & biaya drone, bukan aturan tank.
-    if(isBlockedForDrone(terrain)) continue;
-    result.push({ r: nr, c: nc, stepCost: DRONE_TERRAIN_COST[terrain] });
-  }
-  return result;
-}
-
-const HEURISTICS = {
-  // Manhattan = biaya asli persis di area tanpa rintangan pada gerak 4-arah
-  // -> paling informatif namun tetap admissible (tidak pernah melebih-lebihkan).
-  manhattan: (a, b) => Math.abs(a.r - b.r) + Math.abs(a.c - b.c),
-  // Euclidean selalu <= Manhattan di grid 4-arah -> admissible tapi lebih longgar.
-  euclidean: (a, b) => Math.hypot(a.r - b.r, a.c - b.c),
-  // Chebyshev = max(dr,dc), juga <= Manhattan -> admissible, paling longgar.
-  chebyshev: (a, b) => Math.max(Math.abs(a.r - b.r), Math.abs(a.c - b.c)),
-  // h(n) = 0 untuk semua n -> inilah yang membuat A* berperilaku sebagai UCS.
-  zero: () => 0
-};
-
-function search(grid, start, goal, algorithm, heuristicName){
-  const t0 = performance.now();
-  const hFunc = (algorithm === 'ucs') ? HEURISTICS.zero : HEURISTICS[heuristicName];
-
-  const open = [{ r: start.r, c: start.c, g: 0, f: hFunc(start, goal) }];
-  const cameFrom = new Map();
-  const gScore = new Map([[key(start), 0]]);
-  const closed = new Set();
-  let expandedCount = 0;
-  // BARU — urutan node saat diekspansi (dipop dari open set), dipakai
-  // untuk memvisualisasikan "gelombang" pemindaian awal drone sebagai
-  // animasi menyebar, bukan cuma statistik angka.
-  const expandedOrder = [];
-
-  while(open.length > 0){
-    let bestIdx = 0;
-    for(let i = 1; i < open.length; i++){
-      if(open[i].f < open[bestIdx].f) bestIdx = i;
-    }
-    const current = open.splice(bestIdx, 1)[0];
-    const curKey = key(current);
-
-    if(closed.has(curKey)) continue;
-    closed.add(curKey);
-    expandedCount++;
-    expandedOrder.push({ r: current.r, c: current.c, g: current.g });
-
-    if(current.r === goal.r && current.c === goal.c){
-      const path = [current];
-      let walker = curKey;
-      while(cameFrom.has(walker)){
-        const prev = cameFrom.get(walker);
-        path.push(prev);
-        walker = key(prev);
+      function key(node) {
+        return node.r + "," + node.c;
       }
-      path.reverse();
-      return {
-        path, cost: gScore.get(curKey), expandedCount, expandedOrder,
-        timeMs: performance.now() - t0, found: true
+
+      function neighbors(node, grid) {
+        // BARU — urutan arah sengaja atas, kanan, kiri, bawah: saat beberapa
+        // node punya biaya (f) sama persis, urutan inilah yang menentukan mana
+        // yang diekspansi lebih dulu, sehingga animasi gelombang pemindaian
+        // terlihat menyebar rapi "atas-kanan-kiri-bawah dulu, baru melebar".
+        const dirs = [
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+          [1, 0],
+        ];
+        const result = [];
+        for (const [dr, dc] of dirs) {
+          const nr = node.r + dr,
+            nc = node.c + dc;
+          if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+          const terrain = grid[nr][nc];
+          // BARU — search() ini dipakai KHUSUS untuk drone (mengejar/menyisir),
+          // jadi pakai aturan & biaya drone, bukan aturan tank.
+          if (isBlockedForDrone(terrain)) continue;
+          result.push({ r: nr, c: nc, stepCost: DRONE_TERRAIN_COST[terrain] });
+        }
+        return result;
+      }
+
+      const HEURISTICS = {
+        // Manhattan = biaya asli persis di area tanpa rintangan pada gerak 4-arah
+        // -> paling informatif namun tetap admissible (tidak pernah melebih-lebihkan).
+        manhattan: (a, b) => Math.abs(a.r - b.r) + Math.abs(a.c - b.c),
+        // Euclidean selalu <= Manhattan di grid 4-arah -> admissible tapi lebih longgar.
+        euclidean: (a, b) => Math.hypot(a.r - b.r, a.c - b.c),
+        // Chebyshev = max(dr,dc), juga <= Manhattan -> admissible, paling longgar.
+        chebyshev: (a, b) => Math.max(Math.abs(a.r - b.r), Math.abs(a.c - b.c)),
+        // h(n) = 0 untuk semua n -> inilah yang membuat A* berperilaku sebagai UCS.
+        zero: () => 0,
       };
-    }
 
-    for(const nb of neighbors(current, grid)){
-      const nbKey = key(nb);
-      if(closed.has(nbKey)) continue;
-      const tentativeG = current.g + nb.stepCost;
-      if(!gScore.has(nbKey) || tentativeG < gScore.get(nbKey)){
-        gScore.set(nbKey, tentativeG);
-        cameFrom.set(nbKey, current);
-        open.push({ r: nb.r, c: nb.c, g: tentativeG, f: tentativeG + hFunc(nb, goal) });
+      function search(grid, start, goal, algorithm, heuristicName) {
+        const t0 = performance.now();
+        const hFunc =
+          algorithm === "ucs" ? HEURISTICS.zero : HEURISTICS[heuristicName];
+
+        const open = [{ r: start.r, c: start.c, g: 0, f: hFunc(start, goal) }];
+        const cameFrom = new Map();
+        const gScore = new Map([[key(start), 0]]);
+        const closed = new Set();
+        let expandedCount = 0;
+        // BARU — urutan node saat diekspansi (dipop dari open set), dipakai
+        // untuk memvisualisasikan "gelombang" pemindaian awal drone sebagai
+        // animasi menyebar, bukan cuma statistik angka.
+        const expandedOrder = [];
+
+        while (open.length > 0) {
+          let bestIdx = 0;
+          for (let i = 1; i < open.length; i++) {
+            if (open[i].f < open[bestIdx].f) bestIdx = i;
+          }
+          const current = open.splice(bestIdx, 1)[0];
+          const curKey = key(current);
+
+          if (closed.has(curKey)) continue;
+          closed.add(curKey);
+          expandedCount++;
+          expandedOrder.push({ r: current.r, c: current.c, g: current.g });
+
+          if (current.r === goal.r && current.c === goal.c) {
+            const path = [current];
+            let walker = curKey;
+            while (cameFrom.has(walker)) {
+              const prev = cameFrom.get(walker);
+              path.push(prev);
+              walker = key(prev);
+            }
+            path.reverse();
+            return {
+              path,
+              cost: gScore.get(curKey),
+              expandedCount,
+              expandedOrder,
+              timeMs: performance.now() - t0,
+              found: true,
+            };
+          }
+
+          for (const nb of neighbors(current, grid)) {
+            const nbKey = key(nb);
+            if (closed.has(nbKey)) continue;
+            const tentativeG = current.g + nb.stepCost;
+            if (!gScore.has(nbKey) || tentativeG < gScore.get(nbKey)) {
+              gScore.set(nbKey, tentativeG);
+              cameFrom.set(nbKey, current);
+              open.push({
+                r: nb.r,
+                c: nb.c,
+                g: tentativeG,
+                f: tentativeG + hFunc(nb, goal),
+              });
+            }
+          }
+        }
+
+        return {
+          path: [],
+          cost: Infinity,
+          expandedCount,
+          expandedOrder,
+          timeMs: performance.now() - t0,
+          found: false,
+        };
       }
-    }
-  }
 
-  return { path: [], cost: Infinity, expandedCount, expandedOrder, timeMs: performance.now() - t0, found: false };
-}
-
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 3B — MODIFIKASI: DETEKSI TERBATAS (FOG OF WAR) & POLA PENCARIAN
    =====================================================================
    Berbeda dari versi awal (drone langsung tahu posisi tank lewat
@@ -625,75 +889,90 @@ function search(grid, start, goal, algorithm, heuristicName){
    pada misi SAR (search and rescue) agar seluruh area tersapu tanpa celah.
 */
 
-// Algoritma garis Bresenham: daftar sel yang dilalui garis lurus dari
-// (r0,c0) ke (r1,c1). Dipakai untuk menguji apakah pandangan drone
-// terhalang sesuatu di antara posisinya dan posisi tank.
-function bresenhamLine(r0, c0, r1, c1){
-  const points = [];
-  let dr = Math.abs(r1 - r0), dc = Math.abs(c1 - c0);
-  const sr = r0 < r1 ? 1 : -1, sc = c0 < c1 ? 1 : -1;
-  let err = dr - dc;
-  let r = r0, c = c0;
-  while(true){
-    points.push({ r, c });
-    if(r === r1 && c === c1) break;
-    const e2 = 2 * err;
-    if(e2 > -dc){ err -= dc; r += sr; }
-    if(e2 < dr){ err += dr; c += sc; }
-  }
-  return points;
-}
+      // Algoritma garis Bresenham: daftar sel yang dilalui garis lurus dari
+      // (r0,c0) ke (r1,c1). Dipakai untuk menguji apakah pandangan drone
+      // terhalang sesuatu di antara posisinya dan posisi tank.
+      function bresenhamLine(r0, c0, r1, c1) {
+        const points = [];
+        let dr = Math.abs(r1 - r0),
+          dc = Math.abs(c1 - c0);
+        const sr = r0 < r1 ? 1 : -1,
+          sc = c0 < c1 ? 1 : -1;
+        let err = dr - dc;
+        let r = r0,
+          c = c0;
+        while (true) {
+          points.push({ r, c });
+          if (r === r1 && c === c1) break;
+          const e2 = 2 * err;
+          if (e2 > -dc) {
+            err -= dc;
+            r += sr;
+          }
+          if (e2 < dr) {
+            err += dr;
+            c += sc;
+          }
+        }
+        return points;
+      }
 
-function hasLineOfSight(grid, a, b){
-  const line = bresenhamLine(a.r, a.c, b.r, b.c);
-  for(let i = 1; i < line.length - 1; i++){ // abaikan titik awal & akhir sendiri
-    const { r, c } = line[i];
-    if(blocksSight(grid[r][c])) return false;
-  }
-  return true;
-}
+      function hasLineOfSight(grid, a, b) {
+        const line = bresenhamLine(a.r, a.c, b.r, b.c);
+        for (let i = 1; i < line.length - 1; i++) {
+          // abaikan titik awal & akhir sendiri
+          const { r, c } = line[i];
+          if (blocksSight(grid[r][c])) return false;
+        }
+        return true;
+      }
 
-function canDetectTank(grid, dronePos, tankPos, visionRadius){
-  const dist = Math.hypot(dronePos.r - tankPos.r, dronePos.c - tankPos.c);
-  if(dist > visionRadius) return false;
-  return hasLineOfSight(grid, dronePos, tankPos);
-}
+      function canDetectTank(grid, dronePos, tankPos, visionRadius) {
+        const dist = Math.hypot(dronePos.r - tankPos.r, dronePos.c - tankPos.c);
+        if (dist > visionRadius) return false;
+        return hasLineOfSight(grid, dronePos, tankPos);
+      }
 
-// Membuat daftar waypoint pola pencarian boustrophedon: baris demi baris,
-// arah kolom bolak-balik tiap baris (seperti pola "S" saat mengetik).
-// Urutan ini TETAP (predetermined) dan tidak berubah selama satu peta
-// dipakai, sesuai permintaan "pencarian yang telah dispesifikasikan
-// terlebih dahulu".
-function generateSearchPattern(grid){
-  const waypoints = [];
-  for(let r = 0; r < ROWS; r++){
-    const cols = (r % 2 === 0)
-      ? Array.from({length: COLS}, (_, i) => i)
-      : Array.from({length: COLS}, (_, i) => COLS - 1 - i);
-    for(const c of cols){
-      if(!isBlockedForDrone(grid[r][c])) waypoints.push({ r, c });
-    }
-  }
-  return waypoints;
-}
+      // Membuat daftar waypoint pola pencarian boustrophedon: baris demi baris,
+      // arah kolom bolak-balik tiap baris (seperti pola "S" saat mengetik).
+      // Urutan ini TETAP (predetermined) dan tidak berubah selama satu peta
+      // dipakai, sesuai permintaan "pencarian yang telah dispesifikasikan
+      // terlebih dahulu".
+      function generateSearchPattern(grid) {
+        const waypoints = [];
+        for (let r = 0; r < ROWS; r++) {
+          const cols =
+            r % 2 === 0
+              ? Array.from({ length: COLS }, (_, i) => i)
+              : Array.from({ length: COLS }, (_, i) => COLS - 1 - i);
+          for (const c of cols) {
+            if (!isBlockedForDrone(grid[r][c])) waypoints.push({ r, c });
+          }
+        }
+        return waypoints;
+      }
 
-// BARU — mencari indeks waypoint pola sisir yang PALING DEKAT (jarak
-// Manhattan) dari suatu posisi. Dipakai supaya saat drone mulai menyisir
-// dari posisi yang bukan titik awal drone (mis. setelah sekuens
-// pemindaian awal selesai di tengah peta), ia melanjutkan pola dari
-// waypoint terdekat, bukan balik dulu ke awal pola (indeks 0, biasanya
-// dekat posisi start drone).
-function findNearestSearchIndex(pos){
-  let bestIdx = 0, bestDist = Infinity;
-  for(let i = 0; i < searchPattern.length; i++){
-    const wp = searchPattern[i];
-    const d = Math.abs(wp.r - pos.r) + Math.abs(wp.c - pos.c);
-    if(d < bestDist){ bestDist = d; bestIdx = i; }
-  }
-  return bestIdx;
-}
+      // BARU — mencari indeks waypoint pola sisir yang PALING DEKAT (jarak
+      // Manhattan) dari suatu posisi. Dipakai supaya saat drone mulai menyisir
+      // dari posisi yang bukan titik awal drone (mis. setelah sekuens
+      // pemindaian awal selesai di tengah peta), ia melanjutkan pola dari
+      // waypoint terdekat, bukan balik dulu ke awal pola (indeks 0, biasanya
+      // dekat posisi start drone).
+      function findNearestSearchIndex(pos) {
+        let bestIdx = 0,
+          bestDist = Infinity;
+        for (let i = 0; i < searchPattern.length; i++) {
+          const wp = searchPattern[i];
+          const d = Math.abs(wp.r - pos.r) + Math.abs(wp.c - pos.c);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+          }
+        }
+        return bestIdx;
+      }
 
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 3C — SEKUENS PEMINDAIAN AWAL (BARU)
    =====================================================================
    Sebelum mode fog-of-war "normal" (BAGIAN 3B) berjalan, drone dianggap
@@ -720,883 +999,1042 @@ function findNearestSearchIndex(pos){
       barulah SEKARANG lingkaran radius pandang & mode menyisir standar
       (BAGIAN 3B) diaktifkan mulai dari posisi drone saat ini.
 */
-const SCAN_REVEAL_PER_TICK = 2;   // BARU — dikurangi dari 6 jadi 2: penyebaran per tick lebih halus & jelas diikuti mata
-const SCAN_TICK_MS = 45;          // BARU — dinaikkan dari 16 jadi 45: animasi sengaja diperlambat karena fokus utama simulasi ini memang cara kerja algoritma pencariannya
-const SCAN_PATH_PAUSE_MS = 550;   // jeda menampilkan jalur UCS sebelum ganti ke A*
-const INTRO_MOVE_TICK_MS = 320;   // kecepatan drone berjalan menuju posisi awal tank
+      const SCAN_REVEAL_PER_TICK = 2; // BARU — dikurangi dari 6 jadi 2: penyebaran per tick lebih halus & jelas diikuti mata
+      const SCAN_TICK_MS = 45; // BARU — dinaikkan dari 16 jadi 45: animasi sengaja diperlambat karena fokus utama simulasi ini memang cara kerja algoritma pencariannya
+      const SCAN_PATH_PAUSE_MS = 550; // jeda menampilkan jalur UCS sebelum ganti ke A*
+      const INTRO_MOVE_TICK_MS = 320; // kecepatan drone berjalan menuju posisi awal tank
 
-function clearAllTimers(){
-  if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
-  if(scanTimer){ clearInterval(scanTimer); scanTimer = null; }
-  if(introMoveTimer){ clearInterval(introMoveTimer); introMoveTimer = null; }
-}
+      function clearAllTimers() {
+        if (autoTimer) {
+          clearInterval(autoTimer);
+          autoTimer = null;
+        }
+        if (scanTimer) {
+          clearInterval(scanTimer);
+          scanTimer = null;
+        }
+        if (introMoveTimer) {
+          clearInterval(introMoveTimer);
+          introMoveTimer = null;
+        }
+      }
 
-function startIntroSequence(){
-  clearAllTimers();
-  introTankPos = { r: tank.r, c: tank.c }; // rekam posisi awal SEBELUM tank sempat bergerak
-  lastPath = [];
-  lastKnownPos = null;
+      function startIntroSequence() {
+        clearAllTimers();
+        introTankPos = { r: tank.r, c: tank.c }; // rekam posisi awal SEBELUM tank sempat bergerak
+        lastPath = [];
+        lastKnownPos = null;
 
-  // Tahap 1: pemindaian awal dari posisi drone ke posisi awal tank,
-  // memakai algoritma & heuristik yang SEDANG DIPILIH di panel (BUKAN
-  // di-hardcode ke UCS) — perbaikan bug: sebelumnya tahap ini selalu
-  // memakai UCS apapun pilihan di dropdown, sehingga terlihat seolah
-  // "Reset Posisi" mengubah algoritma balik ke UCS meski A* sedang dipilih.
-  const algo = algoSelect.value, heur = heurSelect.value;
-  const scanResult = search(grid, drone, introTankPos, algo, heur);
-  scanExpandedOrder = scanResult.expandedOrder || [];
-  scanRevealedCount = 0;
-  // BARU — biaya tempuh tertinggi di antara sel yang diekspansi, dipakai
-  // untuk menormalisasi gradien warna dekat(rendah)->jauh(tinggi).
-  scanMaxG = scanExpandedOrder.reduce((max, cell) => Math.max(max, cell.g), 0);
-  introPhase = 'scanning';
-  droneState = 'scanning';
+        // Tahap 1: pemindaian awal dari posisi drone ke posisi awal tank,
+        // memakai algoritma & heuristik yang SEDANG DIPILIH di panel (BUKAN
+        // di-hardcode ke UCS) — perbaikan bug: sebelumnya tahap ini selalu
+        // memakai UCS apapun pilihan di dropdown, sehingga terlihat seolah
+        // "Reset Posisi" mengubah algoritma balik ke UCS meski A* sedang dipilih.
+        const algo = algoSelect.value,
+          heur = heurSelect.value;
+        const scanResult = search(grid, drone, introTankPos, algo, heur);
+        scanExpandedOrder = scanResult.expandedOrder || [];
+        scanRevealedCount = 0;
+        // BARU — biaya tempuh tertinggi di antara sel yang diekspansi, dipakai
+        // untuk menormalisasi gradien warna dekat(rendah)->jauh(tinggi).
+        scanMaxG = scanExpandedOrder.reduce(
+          (max, cell) => Math.max(max, cell.g),
+          0,
+        );
+        introPhase = "scanning";
+        droneState = "scanning";
 
-  const algoLabel = algo === 'ucs' ? 'UCS' : ('A* (' + heur + ')');
-  droneStateBox.textContent = 'MEMINDAI — drone menyapu seluruh medan untuk menemukan tank';
-  statusBox.textContent = 'Pemindaian awal dimulai: drone mencari posisi awal tank ke seluruh medan (' + algoLabel + ')...';
-  statusBox.classList.remove('caught');
-  renderStats(scanResult);
-  draw();
+        const algoLabel = algo === "ucs" ? "UCS" : "A* (" + heur + ")";
+        droneStateBox.textContent =
+          "MEMINDAI — drone menyapu seluruh medan untuk menemukan tank";
+        statusBox.textContent =
+          "Pemindaian awal dimulai: drone mencari posisi awal tank ke seluruh medan (" +
+          algoLabel +
+          ")...";
+        statusBox.classList.remove("caught");
+        renderStats(scanResult);
+        draw();
 
-  if(scanExpandedOrder.length === 0){
-    // Kasus langka (mis. drone & tank di sel yang sama): lewati animasi.
-    finishScanStage(scanResult);
-    return;
-  }
+        if (scanExpandedOrder.length === 0) {
+          // Kasus langka (mis. drone & tank di sel yang sama): lewati animasi.
+          finishScanStage(scanResult);
+          return;
+        }
 
-  scanTimer = setInterval(() => {
-    scanRevealedCount = Math.min(scanExpandedOrder.length, scanRevealedCount + SCAN_REVEAL_PER_TICK);
-    draw();
-    if(scanRevealedCount >= scanExpandedOrder.length){
-      clearInterval(scanTimer);
-      scanTimer = null;
-      finishScanStage(scanResult);
-    }
-  }, SCAN_TICK_MS);
-}
+        scanTimer = setInterval(() => {
+          scanRevealedCount = Math.min(
+            scanExpandedOrder.length,
+            scanRevealedCount + SCAN_REVEAL_PER_TICK,
+          );
+          draw();
+          if (scanRevealedCount >= scanExpandedOrder.length) {
+            clearInterval(scanTimer);
+            scanTimer = null;
+            finishScanStage(scanResult);
+          }
+        }, SCAN_TICK_MS);
+      }
 
-// Tahap 2 — "tank ketemu": buang semua penanda gelombang yang tak
-// terpakai, sisakan sebentar hanya jalur menuju tank sebagai bukti
-// visual bahwa pemindaian berhasil. Lalu lanjut ke tahap 3 (hitung
-// jalur nyata, tetap dengan algoritma yang sama).
-function finishScanStage(scanResult){
-  scanExpandedOrder = [];
-  scanRevealedCount = 0;
-  lastPath = scanResult.found ? scanResult.path : [];
-  droneStateBox.textContent = 'TANK DITEMUKAN (posisi awal) — menyusun jalur pergerakan';
-  statusBox.textContent = 'Posisi awal tank ditemukan. Drone menghitung jalur menuju sana...';
-  draw();
+      // Tahap 2 — "tank ketemu": buang semua penanda gelombang yang tak
+      // terpakai, sisakan sebentar hanya jalur menuju tank sebagai bukti
+      // visual bahwa pemindaian berhasil. Lalu lanjut ke tahap 3 (hitung
+      // jalur nyata, tetap dengan algoritma yang sama).
+      function finishScanStage(scanResult) {
+        scanExpandedOrder = [];
+        scanRevealedCount = 0;
+        lastPath = scanResult.found ? scanResult.path : [];
+        droneStateBox.textContent =
+          "TANK DITEMUKAN (posisi awal) — menyusun jalur pergerakan";
+        statusBox.textContent =
+          "Posisi awal tank ditemukan. Drone menghitung jalur menuju sana...";
+        draw();
 
-  setTimeout(startIntroMove, SCAN_PATH_PAUSE_MS);
-}
+        setTimeout(startIntroMove, SCAN_PATH_PAUSE_MS);
+      }
 
-// Tahap 3 & 4 — hitung jalur NYATA (algoritma & heuristik yang sedang
-// dipilih di panel — perbaikan bug yang sama seperti tahap 1, dulu
-// selalu di-hardcode ke A*), lalu gerakkan drone di sepanjang jalur itu
-// sendiri, mengabaikan pergerakan tank yang sesungguhnya.
-function startIntroMove(){
-  const algo = algoSelect.value, heur = heurSelect.value;
-  const moveResult = search(grid, drone, introTankPos, algo, heur);
-  renderStats(moveResult);
-  introPath = moveResult.path;
-  introPathIndex = 0;
-  introPhase = 'moving';
-  droneState = 'moving';
-  lastPath = introPath;
+      // Tahap 3 & 4 — hitung jalur NYATA (algoritma & heuristik yang sedang
+      // dipilih di panel — perbaikan bug yang sama seperti tahap 1, dulu
+      // selalu di-hardcode ke A*), lalu gerakkan drone di sepanjang jalur itu
+      // sendiri, mengabaikan pergerakan tank yang sesungguhnya.
+      function startIntroMove() {
+        const algo = algoSelect.value,
+          heur = heurSelect.value;
+        const moveResult = search(grid, drone, introTankPos, algo, heur);
+        renderStats(moveResult);
+        introPath = moveResult.path;
+        introPathIndex = 0;
+        introPhase = "moving";
+        droneState = "moving";
+        lastPath = introPath;
 
-  droneStateBox.textContent = 'MENUJU POSISI AWAL TANK — mengabaikan pergerakan tank untuk sementara';
-  statusBox.textContent = moveResult.found
-    ? 'Drone bergerak menuju posisi awal tank hasil pemindaian, mencari jalur alternatif kalau ada halangan (mengabaikan pergerakan tank saat ini)...'
-    : 'Drone tidak menemukan jalur menuju posisi awal tank (terkurung terrain) — pemindaian awal dibatalkan.';
-  draw();
+        droneStateBox.textContent =
+          "MENUJU POSISI AWAL TANK — mengabaikan pergerakan tank untuk sementara";
+        statusBox.textContent = moveResult.found
+          ? "Drone bergerak menuju posisi awal tank hasil pemindaian, mencari jalur alternatif kalau ada halangan (mengabaikan pergerakan tank saat ini)..."
+          : "Drone tidak menemukan jalur menuju posisi awal tank (terkurung terrain) — pemindaian awal dibatalkan.";
+        draw();
 
-  if(!moveResult.found || introPath.length <= 1){
-    // Kasus langka: tak ada jalur, atau drone & posisi awal tank sudah
-    // sama persis -> langsung selesaikan sekuens tanpa animasi jalan.
-    finishIntroSequence();
-    return;
-  }
+        if (!moveResult.found || introPath.length <= 1) {
+          // Kasus langka: tak ada jalur, atau drone & posisi awal tank sudah
+          // sama persis -> langsung selesaikan sekuens tanpa animasi jalan.
+          finishIntroSequence();
+          return;
+        }
 
-  introMoveTimer = setInterval(stepIntroMove, INTRO_MOVE_TICK_MS);
-}
+        introMoveTimer = setInterval(stepIntroMove, INTRO_MOVE_TICK_MS);
+      }
 
-function stepIntroMove(){
-  introPathIndex++;
-  if(introPathIndex >= introPath.length){
-    clearInterval(introMoveTimer);
-    introMoveTimer = null;
-    finishIntroSequence();
-    return;
-  }
-  drone = { r: introPath[introPathIndex].r, c: introPath[introPathIndex].c };
-  visitedCells.add(drone.r + ',' + drone.c);
-  draw();
-}
+      function stepIntroMove() {
+        introPathIndex++;
+        if (introPathIndex >= introPath.length) {
+          clearInterval(introMoveTimer);
+          introMoveTimer = null;
+          finishIntroSequence();
+          return;
+        }
+        drone = {
+          r: introPath[introPathIndex].r,
+          c: introPath[introPathIndex].c,
+        };
+        visitedCells.add(drone.r + "," + drone.c);
+        draw();
+      }
 
-// Tahap 5 — drone tiba PERSIS di posisi awal tank. Baru di sinilah
-// diperiksa apakah tank masih di situ atau sudah pindah, karena selama
-// perjalanan tadi pergerakan tank memang sengaja diabaikan.
-function finishIntroSequence(){
-  introPhase = null;
-  lastPath = [];
+      // Tahap 5 — drone tiba PERSIS di posisi awal tank. Baru di sinilah
+      // diperiksa apakah tank masih di situ atau sudah pindah, karena selama
+      // perjalanan tadi pergerakan tank memang sengaja diabaikan.
+      function finishIntroSequence() {
+        introPhase = null;
+        lastPath = [];
 
-  if(!gameOver && drone.r === tank.r && drone.c === tank.c){
-    gameOver = true;
-    droneState = 'chasing';
-    droneStateBox.textContent = 'TERTANGKAP — tank masih di posisi awal';
-    statusBox.textContent = 'Tank belum sempat berpindah dari posisi awal — drone langsung menangkapnya!';
-    statusBox.classList.add('caught');
-    if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
-    draw();
-    return;
-  }
+        if (!gameOver && drone.r === tank.r && drone.c === tank.c) {
+          gameOver = true;
+          droneState = "chasing";
+          droneStateBox.textContent = "TERTANGKAP — tank masih di posisi awal";
+          statusBox.textContent =
+            "Tank belum sempat berpindah dari posisi awal — drone langsung menangkapnya!";
+          statusBox.classList.add("caught");
+          if (autoTimer) {
+            clearInterval(autoTimer);
+            autoTimer = null;
+          }
+          draw();
+          return;
+        }
 
-  // BARU — lingkaran radius pandang & mode menyisir fog-of-war standar
-  // BARU aktif di sini, karena tank ternyata sudah tidak ada di posisi
-  // awalnya saat drone tiba.
-  lastKnownPos = null;
-  // BARU — supaya drone TIDAK balik dulu ke titik awal pola sisir (yang
-  // bisa jauh sekali dari sini, dekat posisi start drone), pola sisir
-  // dilanjutkan dari waypoint yang PALING DEKAT dengan posisi drone
-  // SEKARANG (titik ia baru tiba), bukan dari indeks 0.
-  searchIndex = findNearestSearchIndex(drone);
-  droneState = 'searching';
-  droneStateBox.textContent = 'MENYISIR — tank tidak ada di posisi awal, radar drone kini aktif';
-  statusBox.textContent = 'Tank sudah berpindah dari posisi awal. Radar jarak pendek drone kini aktif dan ia mulai menyisir dari sini...';
-  statusBox.classList.remove('caught');
-  draw();
-}
+        // BARU — lingkaran radius pandang & mode menyisir fog-of-war standar
+        // BARU aktif di sini, karena tank ternyata sudah tidak ada di posisi
+        // awalnya saat drone tiba.
+        lastKnownPos = null;
+        // BARU — supaya drone TIDAK balik dulu ke titik awal pola sisir (yang
+        // bisa jauh sekali dari sini, dekat posisi start drone), pola sisir
+        // dilanjutkan dari waypoint yang PALING DEKAT dengan posisi drone
+        // SEKARANG (titik ia baru tiba), bukan dari indeks 0.
+        searchIndex = findNearestSearchIndex(drone);
+        droneState = "searching";
+        droneStateBox.textContent =
+          "MENYISIR — tank tidak ada di posisi awal, radar drone kini aktif";
+        statusBox.textContent =
+          "Tank sudah berpindah dari posisi awal. Radar jarak pendek drone kini aktif dan ia mulai menyisir dari sini...";
+        statusBox.classList.remove("caught");
+        draw();
+      }
 
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 4 — STATE PERMAINAN
    ===================================================================== */
-// BARU — posisi awal drone & tank sekarang ACAK (lihat pickRandomStartPositions),
-// bukan selalu pojok kiri-atas/kanan-bawah. initialDronePos & initialTankPos
-// disimpan supaya tombol "Reset Posisi" bisa mengembalikan ke titik awal
-// medan INI (bukan mengacak ulang) — mengacak posisi baru dilakukan lewat
-// tombol "Acak Medan".
-let { dronePos: initialDronePos, tankPos: initialTankPos } = pickRandomStartPositions();
-let tank  = { ...initialTankPos };
-let drone = { ...initialDronePos };
-let tankDir = { dr: 0, dc: -1 }; // arah hadap terakhir, untuk memutar moncong tank
-let grid = generateMap(drone, tank);
-let lastPath = [];
-let autoTimer = null;
-let gameOver = false;
+      // BARU — posisi awal drone & tank sekarang ACAK (lihat pickRandomStartPositions),
+      // bukan selalu pojok kiri-atas/kanan-bawah. initialDronePos & initialTankPos
+      // disimpan supaya tombol "Reset Posisi" bisa mengembalikan ke titik awal
+      // medan INI (bukan mengacak ulang) — mengacak posisi baru dilakukan lewat
+      // tombol "Acak Medan".
+      let { dronePos: initialDronePos, tankPos: initialTankPos } =
+        pickRandomStartPositions();
+      let tank = { ...initialTankPos };
+      let drone = { ...initialDronePos };
+      let tankDir = { dr: 0, dc: -1 }; // arah hadap terakhir, untuk memutar moncong tank
+      let grid = generateMap(drone, tank);
+      let lastPath = [];
+      let autoTimer = null;
+      let gameOver = false;
 
-// BARU — mesin status drone untuk fog of war:
-let droneState = 'searching';                 // 'searching' | 'chasing' | 'investigating'
-let searchPattern = generateSearchPattern(grid); // urutan waypoint tetap
-let searchIndex = 0;                          // posisi drone di dalam pola
-let visitedCells = new Set();                 // jejak sel yang sudah disisir ("r,c")
-let visionRadius = 4;
+      // BARU — mesin status drone untuk fog of war:
+      let droneState = "searching"; // 'searching' | 'chasing' | 'investigating'
+      let searchPattern = generateSearchPattern(grid); // urutan waypoint tetap
+      let searchIndex = 0; // posisi drone di dalam pola
+      let visitedCells = new Set(); // jejak sel yang sudah disisir ("r,c")
+      let visionRadius = 4;
 
-// BARU — memori posisi terakhir: koordinat terakhir tank terlihat sebelum
-// kontak terputus. null berarti drone tidak (lagi) punya "petunjuk" apa pun
-// untuk didatangi, dan harus lanjut menyisir sesuai pola.
-let lastKnownPos = null;
+      // BARU — memori posisi terakhir: koordinat terakhir tank terlihat sebelum
+      // kontak terputus. null berarti drone tidak (lagi) punya "petunjuk" apa pun
+      // untuk didatangi, dan harus lanjut menyisir sesuai pola.
+      let lastKnownPos = null;
 
-// BARU — SEKUENS PEMINDAIAN AWAL (sebelum fog of war "normal" berjalan):
-// drone melakukan satu kali pemindaian menyeluruh dari posisi awalnya
-// untuk menemukan posisi AWAL tank, lalu bergerak otomatis ke sana tanpa
-// peduli tank bergerak atau tidak selama perjalanan tersebut.
-let introPhase = null;          // null | 'scanning' | 'moving' — null berarti sudah lewat/tidak aktif
-let introTankPos = null;        // posisi tank yang direkam SEBELUM giliran pertama
-let scanExpandedOrder = [];     // urutan sel yang "diperiksa" UCS, untuk animasi gelombang
-let scanRevealedCount = 0;      // berapa banyak sel gelombang sudah ditampilkan sejauh ini
-let scanMaxG = 0;                // biaya tempuh (g) tertinggi di antara sel yang diekspansi, untuk normalisasi gradien warna dekat-jauh
-let scanTimer = null;           // interval animasi gelombang pemindaian
-let introMoveTimer = null;      // interval pergerakan drone menuju posisi awal tank
-let introPath = [];             // jalur A* dari drone ke posisi awal tank
-let introPathIndex = 0;         // posisi drone saat ini di sepanjang introPath
+      // BARU — SEKUENS PEMINDAIAN AWAL (sebelum fog of war "normal" berjalan):
+      // drone melakukan satu kali pemindaian menyeluruh dari posisi awalnya
+      // untuk menemukan posisi AWAL tank, lalu bergerak otomatis ke sana tanpa
+      // peduli tank bergerak atau tidak selama perjalanan tersebut.
+      let introPhase = null; // null | 'scanning' | 'moving' — null berarti sudah lewat/tidak aktif
+      let introTankPos = null; // posisi tank yang direkam SEBELUM giliran pertama
+      let scanExpandedOrder = []; // urutan sel yang "diperiksa" UCS, untuk animasi gelombang
+      let scanRevealedCount = 0; // berapa banyak sel gelombang sudah ditampilkan sejauh ini
+      let scanMaxG = 0; // biaya tempuh (g) tertinggi di antara sel yang diekspansi, untuk normalisasi gradien warna dekat-jauh
+      let scanTimer = null; // interval animasi gelombang pemindaian
+      let introMoveTimer = null; // interval pergerakan drone menuju posisi awal tank
+      let introPath = []; // jalur A* dari drone ke posisi awal tank
+      let introPathIndex = 0; // posisi drone saat ini di sepanjang introPath
 
-const canvas = document.getElementById('board');
-const ctx = canvas.getContext('2d');
-const statsBox = document.getElementById('statsBox');
-const statusBox = document.getElementById('statusBox');
-const droneStateBox = document.getElementById('droneStateBox');
-const visionSelect = document.getElementById('visionRadius');
-const algoSelect = document.getElementById('algoSelect');
-const heurSelect = document.getElementById('heurSelect');
+      const canvas = document.getElementById("board");
+      const ctx = canvas.getContext("2d");
+      const statsBox = document.getElementById("statsBox");
+      const statusBox = document.getElementById("statusBox");
+      const droneStateBox = document.getElementById("droneStateBox");
+      const visionSelect = document.getElementById("visionRadius");
+      const algoSelect = document.getElementById("algoSelect");
+      const heurSelect = document.getElementById("heurSelect");
 
-visionSelect.addEventListener('change', () => {
-  visionRadius = parseInt(visionSelect.value, 10);
-});
+      visionSelect.addEventListener("change", () => {
+        visionRadius = parseInt(visionSelect.value, 10);
+      });
 
-function syncHeuristicEnabled(){
-  heurSelect.disabled = (algoSelect.value === 'ucs');
-}
-algoSelect.addEventListener('change', syncHeuristicEnabled);
-syncHeuristicEnabled();
+      function syncHeuristicEnabled() {
+        heurSelect.disabled = algoSelect.value === "ucs";
+      }
+      algoSelect.addEventListener("change", syncHeuristicEnabled);
+      syncHeuristicEnabled();
 
-function getVar(name){
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
+      function getVar(name) {
+        return getComputedStyle(document.documentElement)
+          .getPropertyValue(name)
+          .trim();
+      }
 
-// BARU — interpolasi linear antara dua warna hex, dipakai untuk mewarnai
-// tiap tile yang sudah "disisir" UCS sesuai biaya tempuhnya (t=0 -> warna
-// dekat, t=1 -> warna jauh), supaya penyebaran rute pencarian terlihat
-// sebagai gradien yang jelas, bukan satu warna rata.
-function hexToRgb(hex){
-  const clean = hex.replace('#', '').trim();
-  const bigint = parseInt(clean, 16);
-  return { r: (bigint >> 16) & 255, g: (bigint >> 8) & 255, b: bigint & 255 };
-}
-function lerpColor(hexNear, hexFar, t){
-  const a = hexToRgb(hexNear), b = hexToRgb(hexFar);
-  const r = Math.round(a.r + (b.r - a.r) * t);
-  const g = Math.round(a.g + (b.g - a.g) * t);
-  const bl = Math.round(a.b + (b.b - a.b) * t);
-  return `rgb(${r},${g},${bl})`;
-}
+      // BARU — interpolasi linear antara dua warna hex, dipakai untuk mewarnai
+      // tiap tile yang sudah "disisir" UCS sesuai biaya tempuhnya (t=0 -> warna
+      // dekat, t=1 -> warna jauh), supaya penyebaran rute pencarian terlihat
+      // sebagai gradien yang jelas, bukan satu warna rata.
+      function hexToRgb(hex) {
+        const clean = hex.replace("#", "").trim();
+        const bigint = parseInt(clean, 16);
+        return {
+          r: (bigint >> 16) & 255,
+          g: (bigint >> 8) & 255,
+          b: bigint & 255,
+        };
+      }
+      function lerpColor(hexNear, hexFar, t) {
+        const a = hexToRgb(hexNear),
+          b = hexToRgb(hexFar);
+        const r = Math.round(a.r + (b.r - a.r) * t);
+        const g = Math.round(a.g + (b.g - a.g) * t);
+        const bl = Math.round(a.b + (b.b - a.b) * t);
+        return `rgb(${r},${g},${bl})`;
+      }
 
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 5 — RENDER (MENGGAMBAR MEDAN & ENTITAS)
    ===================================================================== */
-function draw(){
-  for(let r = 0; r < ROWS; r++){
-    for(let c = 0; c < COLS; c++){
-      drawCell(grid[r][c], r, c);
-    }
-  }
+      function draw() {
+        for (let r = 0; r < ROWS; r++) {
+          for (let c = 0; c < COLS; c++) {
+            drawCell(grid[r][c], r, c);
+          }
+        }
 
-  // BARU — jejak permanen area yang sudah pernah disisir drone (redup,
-  // warna terpisah dari jalur aktif) supaya terlihat cakupan sapuannya.
-  ctx.fillStyle = getVar('--search-trail');
-  ctx.globalAlpha = 0.22;
-  for(const key of visitedCells){
-    const [r, c] = key.split(',').map(Number);
-    ctx.fillRect(c * CELL + 6, r * CELL + 6, CELL - 12, CELL - 12);
-  }
-  ctx.globalAlpha = 1;
+        // BARU — jejak permanen area yang sudah pernah disisir drone (redup,
+        // warna terpisah dari jalur aktif) supaya terlihat cakupan sapuannya.
+        ctx.fillStyle = getVar("--search-trail");
+        ctx.globalAlpha = 0.22;
+        for (const key of visitedCells) {
+          const [r, c] = key.split(",").map(Number);
+          ctx.fillRect(c * CELL + 6, r * CELL + 6, CELL - 12, CELL - 12);
+        }
+        ctx.globalAlpha = 1;
 
-  // BARU — visualisasi gelombang ekspansi UCS selama sekuens pemindaian
-  // awal: tiap sel yang sudah "diperiksa" diwarnai menurut biaya
-  // tempuhnya dari drone (gradien biru muda->ungu, dekat->jauh), supaya
-  // arah & jangkauan penyebaran rutenya terlihat jelas sel demi sel,
-  // bukan cuma blok warna rata. Kotak oranye menyorot beberapa sel yang
-  // BARU SAJA diekspansi di tick animasi terakhir ("ujung gelombang").
-  if(droneState === 'scanning' && scanExpandedOrder.length > 0 && scanRevealedCount > 0){
-    const nearColor = getVar('--scan-wave-near');
-    const farColor = getVar('--scan-wave-far');
-    const maxG = scanMaxG > 0 ? scanMaxG : 1;
+        // BARU — visualisasi gelombang ekspansi UCS selama sekuens pemindaian
+        // awal: tiap sel yang sudah "diperiksa" diwarnai menurut biaya
+        // tempuhnya dari drone (gradien biru muda->ungu, dekat->jauh), supaya
+        // arah & jangkauan penyebaran rutenya terlihat jelas sel demi sel,
+        // bukan cuma blok warna rata. Kotak oranye menyorot beberapa sel yang
+        // BARU SAJA diekspansi di tick animasi terakhir ("ujung gelombang").
+        if (
+          droneState === "scanning" &&
+          scanExpandedOrder.length > 0 &&
+          scanRevealedCount > 0
+        ) {
+          const nearColor = getVar("--scan-wave-near");
+          const farColor = getVar("--scan-wave-far");
+          const maxG = scanMaxG > 0 ? scanMaxG : 1;
 
-    ctx.globalAlpha = 0.5;
-    for(let i = 0; i < scanRevealedCount; i++){
-      const cell = scanExpandedOrder[i];
-      const t = Math.max(0, Math.min(1, cell.g / maxG));
-      ctx.fillStyle = lerpColor(nearColor, farColor, t);
-      ctx.fillRect(cell.c * CELL + 3, cell.r * CELL + 3, CELL - 6, CELL - 6);
-    }
-    ctx.globalAlpha = 1;
+          ctx.globalAlpha = 0.5;
+          for (let i = 0; i < scanRevealedCount; i++) {
+            const cell = scanExpandedOrder[i];
+            const t = Math.max(0, Math.min(1, cell.g / maxG));
+            ctx.fillStyle = lerpColor(nearColor, farColor, t);
+            ctx.fillRect(
+              cell.c * CELL + 3,
+              cell.r * CELL + 3,
+              CELL - 6,
+              CELL - 6,
+            );
+          }
+          ctx.globalAlpha = 1;
 
-    // ujung gelombang saat ini: sel-sel yang terungkap di tick terakhir
-    ctx.save();
-    ctx.strokeStyle = getVar('--scan-frontier');
-    ctx.lineWidth = 2;
-    ctx.globalAlpha = 0.9;
-    const frontierStart = Math.max(0, scanRevealedCount - SCAN_REVEAL_PER_TICK);
-    for(let i = frontierStart; i < scanRevealedCount; i++){
-      const cell = scanExpandedOrder[i];
-      ctx.strokeRect(cell.c * CELL + 2, cell.r * CELL + 2, CELL - 4, CELL - 4);
-    }
-    ctx.restore();
-  }
+          // ujung gelombang saat ini: sel-sel yang terungkap di tick terakhir
+          ctx.save();
+          ctx.strokeStyle = getVar("--scan-frontier");
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.9;
+          const frontierStart = Math.max(
+            0,
+            scanRevealedCount - SCAN_REVEAL_PER_TICK,
+          );
+          for (let i = frontierStart; i < scanRevealedCount; i++) {
+            const cell = scanExpandedOrder[i];
+            ctx.strokeRect(
+              cell.c * CELL + 2,
+              cell.r * CELL + 2,
+              CELL - 4,
+              CELL - 4,
+            );
+          }
+          ctx.restore();
+        }
 
-  // Lingkaran radius pandang drone — SEKARANG hanya muncul saat drone
-  // benar-benar mengandalkan sensor jarak pendeknya (menyisir atau
-  // menyelidiki posisi terakhir). Selama sekuens pemindaian awal
-  // ('scanning'/'moving') lingkaran ini SENGAJA disembunyikan, karena
-  // saat itu drone belum "mengendus" apa pun lewat radius pandang — ia
-  // sedang menuju koordinat pasti hasil pemindaian penuh di awal misi.
-  if(droneState === 'searching' || droneState === 'investigating'){
-    ctx.save();
-    ctx.strokeStyle = getVar('--vision-ring');
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(drone.c * CELL + CELL/2, drone.r * CELL + CELL/2, visionRadius * CELL, 0, Math.PI*2);
-    ctx.stroke();
-    ctx.restore();
-  }
+        // Lingkaran radius pandang drone — SEKARANG hanya muncul saat drone
+        // benar-benar mengandalkan sensor jarak pendeknya (menyisir atau
+        // menyelidiki posisi terakhir). Selama sekuens pemindaian awal
+        // ('scanning'/'moving') lingkaran ini SENGAJA disembunyikan, karena
+        // saat itu drone belum "mengendus" apa pun lewat radius pandang — ia
+        // sedang menuju koordinat pasti hasil pemindaian penuh di awal misi.
+        if (droneState === "searching" || droneState === "investigating") {
+          ctx.save();
+          ctx.strokeStyle = getVar("--vision-ring");
+          ctx.globalAlpha = 0.35;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(
+            drone.c * CELL + CELL / 2,
+            drone.r * CELL + CELL / 2,
+            visionRadius * CELL,
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+          ctx.restore();
+        }
 
-  // BARU — penanda posisi terakhir tank yang diketahui drone: lingkaran
-  // putus-putus supaya jelas ini "ingatan", bukan posisi tank sebenarnya
-  // saat ini (yang mungkin sudah pindah).
-  if(lastKnownPos){
-    ctx.save();
-    ctx.strokeStyle = getVar('--lkp-marker');
-    ctx.globalAlpha = 0.85;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath();
-    ctx.arc(lastKnownPos.c * CELL + CELL/2, lastKnownPos.r * CELL + CELL/2, CELL*0.4, 0, Math.PI*2);
-    ctx.stroke();
-    ctx.restore();
-  }
+        // BARU — penanda posisi terakhir tank yang diketahui drone: lingkaran
+        // putus-putus supaya jelas ini "ingatan", bukan posisi tank sebenarnya
+        // saat ini (yang mungkin sudah pindah).
+        if (lastKnownPos) {
+          ctx.save();
+          ctx.strokeStyle = getVar("--lkp-marker");
+          ctx.globalAlpha = 0.85;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.arc(
+            lastKnownPos.c * CELL + CELL / 2,
+            lastKnownPos.r * CELL + CELL / 2,
+            CELL * 0.4,
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+          ctx.restore();
+        }
 
-  // jalur AKTIF yang sedang diikuti drone saat ini: warna beda tergantung
-  // mode — biru saat masih menyisir (belum tahu posisi tank) atau saat
-  // menampilkan jalur demo UCS di sekuens pemindaian, kuning kecoklatan
-  // saat menuju posisi terakhir tank yang diingat, krem saat mengejar
-  // tank secara langsung ATAU saat menuju posisi awal tank hasil
-  // pemindaian (mode 'moving' di sekuens intro, jalurnya dari A*).
-  let pathColorVar = '--search-active';
-  if(droneState === 'chasing' || droneState === 'moving') pathColorVar = '--path';
-  else if(droneState === 'investigating') pathColorVar = '--investigate-path';
-  ctx.fillStyle = getVar(pathColorVar);
-  ctx.globalAlpha = 0.6;
-  for(const step of lastPath){
-    ctx.fillRect(step.c * CELL + 6, step.r * CELL + 6, CELL - 12, CELL - 12);
-  }
-  ctx.globalAlpha = 1;
+        // jalur AKTIF yang sedang diikuti drone saat ini: warna beda tergantung
+        // mode — biru saat masih menyisir (belum tahu posisi tank) atau saat
+        // menampilkan jalur demo UCS di sekuens pemindaian, kuning kecoklatan
+        // saat menuju posisi terakhir tank yang diingat, krem saat mengejar
+        // tank secara langsung ATAU saat menuju posisi awal tank hasil
+        // pemindaian (mode 'moving' di sekuens intro, jalurnya dari A*).
+        let pathColorVar = "--search-active";
+        if (droneState === "chasing" || droneState === "moving")
+          pathColorVar = "--path";
+        else if (droneState === "investigating")
+          pathColorVar = "--investigate-path";
+        ctx.fillStyle = getVar(pathColorVar);
+        ctx.globalAlpha = 0.6;
+        for (const step of lastPath) {
+          ctx.fillRect(
+            step.c * CELL + 6,
+            step.r * CELL + 6,
+            CELL - 12,
+            CELL - 12,
+          );
+        }
+        ctx.globalAlpha = 1;
 
-  drawTank();
-  drawDrone();
-}
-
-function isRiverish(t){ return t === RIVER || t === BRIDGE; }
-
-// BARU — menyimpulkan arah lokal aliran sungai tepat di sel jembatan ini,
-// dengan mengecek 8 tetangganya untuk sel sungai/jembatan lain yang
-// tersambung. Dipakai supaya papan jembatan digambar SEJAJAR arah sungai
-// (menutupi air di sepanjang alirannya), sehingga penyeberangannya jelas
-// tegak lurus terhadap arah itu — bukan asal horizontal seperti
-// sebelumnya, yang membuat jembatan kadang "menghadap" ke air alih-alih
-// menyeberang ke daerah seberang saat sungai lokal ternyata mengalir
-// horizontal atau diagonal.
-function getRiverAxis(r, c){
-  const north = r > 0 && isRiverish(grid[r-1][c]);
-  const south = r < ROWS - 1 && isRiverish(grid[r+1][c]);
-  const west  = c > 0 && isRiverish(grid[r][c-1]);
-  const east  = c < COLS - 1 && isRiverish(grid[r][c+1]);
-  const nw = r > 0 && c > 0 && isRiverish(grid[r-1][c-1]);
-  const se = r < ROWS - 1 && c < COLS - 1 && isRiverish(grid[r+1][c+1]);
-  const ne = r > 0 && c < COLS - 1 && isRiverish(grid[r-1][c+1]);
-  const sw = r < ROWS - 1 && c > 0 && isRiverish(grid[r+1][c-1]);
-
-  if(north || south) return 'vertical';
-  if(west || east) return 'horizontal';
-  if(nw || se) return 'diag-main';  // arus mengalir dari arah '\'
-  if(ne || sw) return 'diag-anti';  // arus mengalir dari arah '/'
-  return 'horizontal'; // fallback langka (jembatan terisolasi)
-}
-
-// Papan jembatan digambar SEJAJAR arah sungai (axis), supaya jelas mana
-// sisi yang menghadap ke seberang (arah menyeberang selalu TEGAK LURUS
-// terhadap papan-papan ini).
-function drawBridgeTies(x, y, axis){
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(x, y, CELL, CELL);
-  ctx.clip();
-  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-  ctx.lineWidth = 1;
-
-  if(axis === 'vertical'){
-    for(let i = 1; i < 4; i++){
-      ctx.beginPath();
-      ctx.moveTo(x + i*CELL/4, y);
-      ctx.lineTo(x + i*CELL/4, y + CELL);
-      ctx.stroke();
-    }
-  } else if(axis === 'horizontal'){
-    for(let i = 1; i < 4; i++){
-      ctx.beginPath();
-      ctx.moveTo(x, y + i*CELL/4);
-      ctx.lineTo(x + CELL, y + i*CELL/4);
-      ctx.stroke();
-    }
-  } else {
-    const sign = axis === 'diag-main' ? 1 : -1;
-    for(let i = -1; i <= 1; i++){
-      const off = i * CELL * 0.6;
-      ctx.beginPath();
-      if(sign === 1){
-        ctx.moveTo(x - CELL + off, y - CELL);
-        ctx.lineTo(x + 2*CELL + off, y + 2*CELL);
-      } else {
-        ctx.moveTo(x + 2*CELL + off, y - CELL);
-        ctx.lineTo(x - CELL + off, y + 2*CELL);
+        drawTank();
+        drawDrone();
       }
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
-}
 
-function drawCell(terrain, r, c){
-  const x = c * CELL, y = r * CELL;
-  const checker = (r + c) % 2 === 0;
+      function isRiverish(t) {
+        return t === RIVER || t === BRIDGE;
+      }
 
-  // dasar tanah selalu digambar dulu, medan khusus ditumpuk di atasnya
-  ctx.fillStyle = checker ? getVar('--dirt') : getVar('--dirt-alt');
-  ctx.fillRect(x, y, CELL, CELL);
+      // BARU — menyimpulkan arah lokal aliran sungai tepat di sel jembatan ini,
+      // dengan mengecek 8 tetangganya untuk sel sungai/jembatan lain yang
+      // tersambung. Dipakai supaya papan jembatan digambar SEJAJAR arah sungai
+      // (menutupi air di sepanjang alirannya), sehingga penyeberangannya jelas
+      // tegak lurus terhadap arah itu — bukan asal horizontal seperti
+      // sebelumnya, yang membuat jembatan kadang "menghadap" ke air alih-alih
+      // menyeberang ke daerah seberang saat sungai lokal ternyata mengalir
+      // horizontal atau diagonal.
+      function getRiverAxis(r, c) {
+        const north = r > 0 && isRiverish(grid[r - 1][c]);
+        const south = r < ROWS - 1 && isRiverish(grid[r + 1][c]);
+        const west = c > 0 && isRiverish(grid[r][c - 1]);
+        const east = c < COLS - 1 && isRiverish(grid[r][c + 1]);
+        const nw = r > 0 && c > 0 && isRiverish(grid[r - 1][c - 1]);
+        const se =
+          r < ROWS - 1 && c < COLS - 1 && isRiverish(grid[r + 1][c + 1]);
+        const ne = r > 0 && c < COLS - 1 && isRiverish(grid[r - 1][c + 1]);
+        const sw = r < ROWS - 1 && c > 0 && isRiverish(grid[r + 1][c - 1]);
 
-  switch(terrain){
-    case TREE: {
-      ctx.fillStyle = getVar('--tree-trunk');
-      ctx.fillRect(x + CELL/2 - 2, y + CELL*0.55, 4, CELL*0.4);
-      ctx.beginPath();
-      ctx.fillStyle = getVar('--tree-canopy');
-      ctx.arc(x + CELL/2, y + CELL*0.42, CELL*0.36, 0, Math.PI*2);
-      ctx.fill();
-      break;
-    }
-    case ROCK: {
-      ctx.beginPath();
-      ctx.fillStyle = getVar('--rock');
-      ctx.ellipse(x + CELL*0.5, y + CELL*0.55, CELL*0.38, CELL*0.28, 0, 0, Math.PI*2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.fillStyle = getVar('--rock-dark');
-      ctx.ellipse(x + CELL*0.6, y + CELL*0.6, CELL*0.16, CELL*0.12, 0, 0, Math.PI*2);
-      ctx.fill();
-      break;
-    }
-    case RIVER: {
-      ctx.fillStyle = checker ? getVar('--river') : getVar('--river-alt');
-      ctx.fillRect(x, y, CELL, CELL);
-      break;
-    }
-    case BRIDGE: {
-      ctx.fillStyle = getVar('--bridge');
-      ctx.fillRect(x, y, CELL, CELL);
-      drawBridgeTies(x, y, getRiverAxis(r, c));
-      break;
-    }
-    case ARTILLERY: {
-      ctx.fillStyle = getVar('--artillery-body');
-      ctx.beginPath();
-      ctx.arc(x + CELL*0.5, y + CELL*0.6, CELL*0.24, 0, Math.PI*2);
-      ctx.fill();
-      ctx.strokeStyle = getVar('--artillery-barrel');
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(x + CELL*0.5, y + CELL*0.55);
-      ctx.lineTo(x + CELL*0.9, y + CELL*0.2);
-      ctx.stroke();
-      break;
-    }
-    case CAMP: {
-      ctx.fillStyle = getVar('--camp-tent-dark');
-      ctx.fillRect(x + 2, y + CELL*0.55, CELL - 4, CELL*0.4);
-      ctx.beginPath();
-      ctx.fillStyle = getVar('--camp-tent');
-      ctx.moveTo(x + 2, y + CELL*0.58);
-      ctx.lineTo(x + CELL/2, y + CELL*0.1);
-      ctx.lineTo(x + CELL - 2, y + CELL*0.58);
-      ctx.closePath();
-      ctx.fill();
-      break;
-    }
-    case RUIN: {
-      ctx.fillStyle = getVar('--ruin-wall');
-      ctx.fillRect(x + 3, y + CELL*0.3, CELL - 6, CELL*0.65);
-      ctx.strokeStyle = getVar('--ruin-crack');
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(x + CELL*0.3, y + CELL*0.3);
-      ctx.lineTo(x + CELL*0.45, y + CELL*0.6);
-      ctx.lineTo(x + CELL*0.35, y + CELL*0.95);
-      ctx.stroke();
-      // atap runtuh sebagian (garis miring putus)
-      ctx.beginPath();
-      ctx.moveTo(x + 3, y + CELL*0.3);
-      ctx.lineTo(x + CELL*0.6, y + CELL*0.08);
-      ctx.stroke();
-      break;
-    }
-    default: break; // DIRT, sudah digambar sebagai dasar
-  }
+        if (north || south) return "vertical";
+        if (west || east) return "horizontal";
+        if (nw || se) return "diag-main"; // arus mengalir dari arah '\'
+        if (ne || sw) return "diag-anti"; // arus mengalir dari arah '/'
+        return "horizontal"; // fallback langka (jembatan terisolasi)
+      }
 
-  drawCostLabel(terrain, r, c);
-}
+      // Papan jembatan digambar SEJAJAR arah sungai (axis), supaya jelas mana
+      // sisi yang menghadap ke seberang (arah menyeberang selalu TEGAK LURUS
+      // terhadap papan-papan ini).
+      function drawBridgeTies(x, y, axis) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, CELL, CELL);
+        ctx.clip();
+        ctx.strokeStyle = "rgba(0,0,0,0.3)";
+        ctx.lineWidth = 1;
 
-// BARU — menuliskan biaya tempuh DRONE di pojok kanan-bawah tiap sel,
-// supaya g(n) yang dijumlahkan UCS/A* terlihat langsung di peta (bukan
-// cuma di legenda). Artileri anti-udara ditandai "X" karena sama sekali
-// tak terlewati drone (tidak punya biaya).
-function drawCostLabel(terrain, r, c){
-  const x = c * CELL, y = r * CELL;
-  const isBlockedTile = terrain === ARTILLERY;
-  const cost = DRONE_TERRAIN_COST[terrain];
+        if (axis === "vertical") {
+          for (let i = 1; i < 4; i++) {
+            ctx.beginPath();
+            ctx.moveTo(x + (i * CELL) / 4, y);
+            ctx.lineTo(x + (i * CELL) / 4, y + CELL);
+            ctx.stroke();
+          }
+        } else if (axis === "horizontal") {
+          for (let i = 1; i < 4; i++) {
+            ctx.beginPath();
+            ctx.moveTo(x, y + (i * CELL) / 4);
+            ctx.lineTo(x + CELL, y + (i * CELL) / 4);
+            ctx.stroke();
+          }
+        } else {
+          const sign = axis === "diag-main" ? 1 : -1;
+          for (let i = -1; i <= 1; i++) {
+            const off = i * CELL * 0.6;
+            ctx.beginPath();
+            if (sign === 1) {
+              ctx.moveTo(x - CELL + off, y - CELL);
+              ctx.lineTo(x + 2 * CELL + off, y + 2 * CELL);
+            } else {
+              ctx.moveTo(x + 2 * CELL + off, y - CELL);
+              ctx.lineTo(x - CELL + off, y + 2 * CELL);
+            }
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
 
-  // BARU — biaya 1 (tanah datar) adalah "default" tak perlu ditulis,
-  // supaya tile yang mahal (2/3/4/6) dan tile terhalang (X) lebih menonjol
-  // tanpa peta dipenuhi angka "1" di mana-mana.
-  if(!isBlockedTile && cost === 1) return;
+      function drawCell(terrain, r, c) {
+        const x = c * CELL,
+          y = r * CELL;
+        const checker = (r + c) % 2 === 0;
 
-  const label = isBlockedTile ? 'X' : String(cost);
+        // dasar tanah selalu digambar dulu, medan khusus ditumpuk di atasnya
+        ctx.fillStyle = checker ? getVar("--dirt") : getVar("--dirt-alt");
+        ctx.fillRect(x, y, CELL, CELL);
 
-  ctx.save();
-  ctx.font = 'bold 10px sans-serif';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'bottom';
-  const px = x + CELL - 3, py = y + CELL - 3;
-  ctx.lineWidth = 2.5;
-  ctx.strokeStyle = 'rgba(0,0,0,0.65)';
-  ctx.strokeText(label, px, py);
-  ctx.fillStyle = isBlockedTile ? '#F0A04B' : '#F5F0E0';
-  ctx.fillText(label, px, py);
-  ctx.restore();
-}
+        switch (terrain) {
+          case TREE: {
+            ctx.fillStyle = getVar("--tree-trunk");
+            ctx.fillRect(x + CELL / 2 - 2, y + CELL * 0.55, 4, CELL * 0.4);
+            ctx.beginPath();
+            ctx.fillStyle = getVar("--tree-canopy");
+            ctx.arc(x + CELL / 2, y + CELL * 0.42, CELL * 0.36, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+          }
+          case ROCK: {
+            ctx.beginPath();
+            ctx.fillStyle = getVar("--rock");
+            ctx.ellipse(
+              x + CELL * 0.5,
+              y + CELL * 0.55,
+              CELL * 0.38,
+              CELL * 0.28,
+              0,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle = getVar("--rock-dark");
+            ctx.ellipse(
+              x + CELL * 0.6,
+              y + CELL * 0.6,
+              CELL * 0.16,
+              CELL * 0.12,
+              0,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+            break;
+          }
+          case RIVER: {
+            ctx.fillStyle = checker ? getVar("--river") : getVar("--river-alt");
+            ctx.fillRect(x, y, CELL, CELL);
+            break;
+          }
+          case BRIDGE: {
+            ctx.fillStyle = getVar("--bridge");
+            ctx.fillRect(x, y, CELL, CELL);
+            drawBridgeTies(x, y, getRiverAxis(r, c));
+            break;
+          }
+          case ARTILLERY: {
+            ctx.fillStyle = getVar("--artillery-body");
+            ctx.beginPath();
+            ctx.arc(
+              x + CELL * 0.5,
+              y + CELL * 0.6,
+              CELL * 0.24,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+            ctx.strokeStyle = getVar("--artillery-barrel");
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(x + CELL * 0.5, y + CELL * 0.55);
+            ctx.lineTo(x + CELL * 0.9, y + CELL * 0.2);
+            ctx.stroke();
+            break;
+          }
+          case CAMP: {
+            ctx.fillStyle = getVar("--camp-tent-dark");
+            ctx.fillRect(x + 2, y + CELL * 0.55, CELL - 4, CELL * 0.4);
+            ctx.beginPath();
+            ctx.fillStyle = getVar("--camp-tent");
+            ctx.moveTo(x + 2, y + CELL * 0.58);
+            ctx.lineTo(x + CELL / 2, y + CELL * 0.1);
+            ctx.lineTo(x + CELL - 2, y + CELL * 0.58);
+            ctx.closePath();
+            ctx.fill();
+            break;
+          }
+          case RUIN: {
+            ctx.fillStyle = getVar("--ruin-wall");
+            ctx.fillRect(x + 3, y + CELL * 0.3, CELL - 6, CELL * 0.65);
+            ctx.strokeStyle = getVar("--ruin-crack");
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(x + CELL * 0.3, y + CELL * 0.3);
+            ctx.lineTo(x + CELL * 0.45, y + CELL * 0.6);
+            ctx.lineTo(x + CELL * 0.35, y + CELL * 0.95);
+            ctx.stroke();
+            // atap runtuh sebagian (garis miring putus)
+            ctx.beginPath();
+            ctx.moveTo(x + 3, y + CELL * 0.3);
+            ctx.lineTo(x + CELL * 0.6, y + CELL * 0.08);
+            ctx.stroke();
+            break;
+          }
+          default:
+            break; // DIRT, sudah digambar sebagai dasar
+        }
 
-function drawTank(){
-  const cx = tank.c * CELL + CELL/2;
-  const cy = tank.r * CELL + CELL/2;
-  const angle = Math.atan2(tankDir.dr, tankDir.dc);
+        drawCostLabel(terrain, r, c);
+      }
 
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
+      // BARU — menuliskan biaya tempuh DRONE di pojok kanan-bawah tiap sel,
+      // supaya g(n) yang dijumlahkan UCS/A* terlihat langsung di peta (bukan
+      // cuma di legenda). Artileri anti-udara ditandai "X" karena sama sekali
+      // tak terlewati drone (tidak punya biaya).
+      function drawCostLabel(terrain, r, c) {
+        const x = c * CELL,
+          y = r * CELL;
+        const isBlockedTile = terrain === ARTILLERY;
+        const cost = DRONE_TERRAIN_COST[terrain];
 
-  // badan tank
-  ctx.fillStyle = getVar('--tank');
-  ctx.fillRect(-CELL*0.32, -CELL*0.24, CELL*0.64, CELL*0.48);
-  // trek roda
-  ctx.fillStyle = getVar('--tank-dark');
-  ctx.fillRect(-CELL*0.34, -CELL*0.30, CELL*0.68, CELL*0.10);
-  ctx.fillRect(-CELL*0.34, CELL*0.20, CELL*0.68, CELL*0.10);
-  // menara & moncong menghadap arah gerak terakhir
-  ctx.beginPath();
-  ctx.fillStyle = getVar('--tank-dark');
-  ctx.arc(0, 0, CELL*0.18, 0, Math.PI*2);
-  ctx.fill();
-  ctx.strokeStyle = getVar('--tank-dark');
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(CELL*0.36, 0);
-  ctx.stroke();
+        // BARU — biaya 1 (tanah datar) adalah "default" tak perlu ditulis,
+        // supaya tile yang mahal (2/3/4/6) dan tile terhalang (X) lebih menonjol
+        // tanpa peta dipenuhi angka "1" di mana-mana.
+        if (!isBlockedTile && cost === 1) return;
 
-  ctx.restore();
-}
+        const label = isBlockedTile ? "X" : String(cost);
 
-function drawDrone(){
-  const cx = drone.c * CELL + CELL/2;
-  const cy = drone.r * CELL + CELL/2;
-  const r = CELL*0.32;
+        ctx.save();
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        const px = x + CELL - 3,
+          py = y + CELL - 3;
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = "rgba(0,0,0,0.65)";
+        ctx.strokeText(label, px, py);
+        ctx.fillStyle = isBlockedTile ? "#F0A04B" : "#F5F0E0";
+        ctx.fillText(label, px, py);
+        ctx.restore();
+      }
 
-  // badan
-  ctx.beginPath();
-  ctx.fillStyle = getVar('--drone');
-  ctx.arc(cx, cy, CELL*0.14, 0, Math.PI*2);
-  ctx.fill();
+      function drawTank() {
+        const cx = tank.c * CELL + CELL / 2;
+        const cy = tank.r * CELL + CELL / 2;
+        const angle = Math.atan2(tankDir.dr, tankDir.dc);
 
-  // 4 lengan + rotor di tiap sudut
-  const offsets = [[-1,-1],[1,-1],[-1,1],[1,1]];
-  for(const [ox, oy] of offsets){
-    const armX = cx + ox * r;
-    const armY = cy + oy * r;
-    ctx.strokeStyle = getVar('--drone-dark');
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(armX, armY);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.fillStyle = getVar('--drone-dark');
-    ctx.arc(armX, armY, CELL*0.09, 0, Math.PI*2);
-    ctx.fill();
-  }
-}
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
 
-/* =====================================================================
+        // badan tank
+        ctx.fillStyle = getVar("--tank");
+        ctx.fillRect(-CELL * 0.32, -CELL * 0.24, CELL * 0.64, CELL * 0.48);
+        // trek roda
+        ctx.fillStyle = getVar("--tank-dark");
+        ctx.fillRect(-CELL * 0.34, -CELL * 0.3, CELL * 0.68, CELL * 0.1);
+        ctx.fillRect(-CELL * 0.34, CELL * 0.2, CELL * 0.68, CELL * 0.1);
+        // menara & moncong menghadap arah gerak terakhir
+        ctx.beginPath();
+        ctx.fillStyle = getVar("--tank-dark");
+        ctx.arc(0, 0, CELL * 0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = getVar("--tank-dark");
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(CELL * 0.36, 0);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawDrone() {
+        const cx = drone.c * CELL + CELL / 2;
+        const cy = drone.r * CELL + CELL / 2;
+        const r = CELL * 0.32;
+
+        // badan
+        ctx.beginPath();
+        ctx.fillStyle = getVar("--drone");
+        ctx.arc(cx, cy, CELL * 0.14, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 4 lengan + rotor di tiap sudut
+        const offsets = [
+          [-1, -1],
+          [1, -1],
+          [-1, 1],
+          [1, 1],
+        ];
+        for (const [ox, oy] of offsets) {
+          const armX = cx + ox * r;
+          const armY = cy + oy * r;
+          ctx.strokeStyle = getVar("--drone-dark");
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(armX, armY);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.fillStyle = getVar("--drone-dark");
+          ctx.arc(armX, armY, CELL * 0.09, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      /* =====================================================================
    BAGIAN 6 — LOGIKA GILIRAN: TANK BERGERAK -> DRONE MENGEJAR
    ===================================================================== */
-function tryMoveTank(dr, dc){
-  if(gameOver) return;
-  // BARU — selama fase 'scanning' (cutscene pemindaian awal), kendali
-  // tank memang belum aktif: drone sedang "membaca" seluruh medan.
-  if(introPhase === 'scanning') return;
+      function tryMoveTank(dr, dc) {
+        if (gameOver) return;
+        // BARU — selama fase 'scanning' (cutscene pemindaian awal), kendali
+        // tank memang belum aktif: drone sedang "membaca" seluruh medan.
+        if (introPhase === "scanning") return;
 
-  const nr = tank.r + dr, nc = tank.c + dc;
-  if(nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) return;
-  if(isBlocked(grid[nr][nc])) return;
-  tank = { r: nr, c: nc };
-  tankDir = { dr, dc };
+        const nr = tank.r + dr,
+          nc = tank.c + dc;
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) return;
+        if (isBlocked(grid[nr][nc])) return;
+        tank = { r: nr, c: nc };
+        tankDir = { dr, dc };
 
-  if(introPhase === 'moving'){
-    // BARU — sesuai permintaan: selama drone masih dalam perjalanan
-    // otomatis menuju posisi AWAL tank (hasil pemindaian), pergerakan
-    // tank di sini SENGAJA diabaikan oleh drone. Tank tetap bisa
-    // bergerak (makanya posisinya tetap di-update di atas), tapi drone
-    // tidak menghitung ulang jalurnya — ia tetap menuju titik lama.
-    draw();
-    return;
-  }
+        if (introPhase === "moving") {
+          // BARU — sesuai permintaan: selama drone masih dalam perjalanan
+          // otomatis menuju posisi AWAL tank (hasil pemindaian), pergerakan
+          // tank di sini SENGAJA diabaikan oleh drone. Tank tetap bisa
+          // bergerak (makanya posisinya tetap di-update di atas), tapi drone
+          // tidak menghitung ulang jalurnya — ia tetap menuju titik lama.
+          draw();
+          return;
+        }
 
-  droneTurn();
-  draw();
-}
+        droneTurn();
+        draw();
+      }
 
-function droneTurn(){
-  if(gameOver) return;
-  // BARU — selama sekuens pemindaian awal masih berjalan ('scanning'
-  // atau 'moving'), giliran drone normal (berbasis deteksi/fog of war)
-  // belum boleh ikut campur; drone dikendalikan sepenuhnya oleh
-  // startIntroSequence()/stepIntroMove() sampai sekuens itu selesai.
-  if(introPhase) return;
+      function droneTurn() {
+        if (gameOver) return;
+        // BARU — selama sekuens pemindaian awal masih berjalan ('scanning'
+        // atau 'moving'), giliran drone normal (berbasis deteksi/fog of war)
+        // belum boleh ikut campur; drone dikendalikan sepenuhnya oleh
+        // startIntroSequence()/stepIntroMove() sampai sekuens itu selesai.
+        if (introPhase) return;
 
-  // BARU — cek deteksi dulu: drone hanya "tahu" posisi tank kalau tank
-  // ada dalam radius pandang DAN tidak terhalang line-of-sight.
-  const detected = canDetectTank(grid, drone, tank, visionRadius);
-  let result;
+        // BARU — cek deteksi dulu: drone hanya "tahu" posisi tank kalau tank
+        // ada dalam radius pandang DAN tidak terhalang line-of-sight.
+        const detected = canDetectTank(grid, drone, tank, visionRadius);
+        let result;
 
-  if(detected){
-    droneState = 'chasing';
-    // Setiap kali tank benar-benar terlihat, perbarui "ingatan" posisi
-    // terakhirnya. Ini yang dipakai nanti kalau kontak tiba-tiba terputus.
-    lastKnownPos = { r: tank.r, c: tank.c };
-    // Walau tank "sudah diketahui", algoritma pencarian tetap dijalankan
-    // ULANG setiap giliran karena tank terus bergerak (goal berubah tiap
-    // saat) -> drone tidak pernah berhenti mencari, hanya berganti target
-    // dari waypoint pola menjadi posisi tank yang sebenarnya.
-    result = search(grid, drone, tank, algoSelect.value, heurSelect.value);
-  } else if(lastKnownPos && !(drone.r === lastKnownPos.r && drone.c === lastKnownPos.c)){
-    // BARU — kontak baru saja terputus (atau belum tuntas diperiksa):
-    // drone TIDAK langsung kembali ke pola sisir. Ia dulu menuju titik
-    // terakhir tank terlihat, seolah berkata "terakhir kali dia di sini".
-    droneState = 'investigating';
-    result = search(grid, drone, lastKnownPos, algoSelect.value, heurSelect.value);
-    if(!result.found){
-      // Titik itu ternyata tak terjangkau (mis. tank sempat melintasi
-      // area yang sekarang terkunci dari sisi drone) -> jangan macet
-      // menunggu selamanya, langsung lupakan dan coba pola sisir.
-      lastKnownPos = null;
-      droneState = 'searching';
-      result = continueSearchPattern();
-    }
-  } else {
-    // Tidak ada petunjuk sama sekali, ATAU drone baru saja sampai di
-    // titik terakhir yang diingat dan tidak menemukan tank di sana ->
-    // "lupakan" titik itu dan lanjutkan pola pencarian tetap.
-    if(lastKnownPos){
-      lastKnownPos = null;
-      // BARU — drone barusan mengejar/menyelidiki, jadi posisinya
-      // sekarang bisa jauh dari searchIndex lama (yang berhenti di
-      // tempat ia meninggalkan pola sisir sebelum mengejar). Supaya
-      // tidak balik jauh ke waypoint lama itu, lanjutkan pola dari
-      // waypoint yang PALING DEKAT dengan posisi drone SEKARANG.
-      searchIndex = findNearestSearchIndex(drone);
-    }
-    droneState = 'searching';
-    result = continueSearchPattern();
-  }
+        if (detected) {
+          droneState = "chasing";
+          // Setiap kali tank benar-benar terlihat, perbarui "ingatan" posisi
+          // terakhirnya. Ini yang dipakai nanti kalau kontak tiba-tiba terputus.
+          lastKnownPos = { r: tank.r, c: tank.c };
+          // Walau tank "sudah diketahui", algoritma pencarian tetap dijalankan
+          // ULANG setiap giliran karena tank terus bergerak (goal berubah tiap
+          // saat) -> drone tidak pernah berhenti mencari, hanya berganti target
+          // dari waypoint pola menjadi posisi tank yang sebenarnya.
+          result = search(
+            grid,
+            drone,
+            tank,
+            algoSelect.value,
+            heurSelect.value,
+          );
+        } else if (
+          lastKnownPos &&
+          !(drone.r === lastKnownPos.r && drone.c === lastKnownPos.c)
+        ) {
+          // BARU — kontak baru saja terputus (atau belum tuntas diperiksa):
+          // drone TIDAK langsung kembali ke pola sisir. Ia dulu menuju titik
+          // terakhir tank terlihat, seolah berkata "terakhir kali dia di sini".
+          droneState = "investigating";
+          result = search(
+            grid,
+            drone,
+            lastKnownPos,
+            algoSelect.value,
+            heurSelect.value,
+          );
+          if (!result.found) {
+            // Titik itu ternyata tak terjangkau (mis. tank sempat melintasi
+            // area yang sekarang terkunci dari sisi drone) -> jangan macet
+            // menunggu selamanya, langsung lupakan dan coba pola sisir.
+            lastKnownPos = null;
+            droneState = "searching";
+            result = continueSearchPattern();
+          }
+        } else {
+          // Tidak ada petunjuk sama sekali, ATAU drone baru saja sampai di
+          // titik terakhir yang diingat dan tidak menemukan tank di sana ->
+          // "lupakan" titik itu dan lanjutkan pola pencarian tetap.
+          if (lastKnownPos) {
+            lastKnownPos = null;
+            // BARU — drone barusan mengejar/menyelidiki, jadi posisinya
+            // sekarang bisa jauh dari searchIndex lama (yang berhenti di
+            // tempat ia meninggalkan pola sisir sebelum mengejar). Supaya
+            // tidak balik jauh ke waypoint lama itu, lanjutkan pola dari
+            // waypoint yang PALING DEKAT dengan posisi drone SEKARANG.
+            searchIndex = findNearestSearchIndex(drone);
+          }
+          droneState = "searching";
+          result = continueSearchPattern();
+        }
 
-  lastPath = result.path;
-  renderStats(result);
-  droneStateBox.textContent = detected
-    ? 'MENGEJAR — tank terdeteksi dalam radius pandang'
-    : (droneState === 'investigating'
-        ? 'MENYELIDIKI — menuju posisi terakhir tank yang diketahui'
-        : 'MENYISIR — tank belum terdeteksi');
+        lastPath = result.path;
+        renderStats(result);
+        droneStateBox.textContent = detected
+          ? "MENGEJAR — tank terdeteksi dalam radius pandang"
+          : droneState === "investigating"
+            ? "MENYELIDIKI — menuju posisi terakhir tank yang diketahui"
+            : "MENYISIR — tank belum terdeteksi";
 
-  if(!result.found){
-    statusBox.textContent = detected
-      ? 'Drone tidak menemukan jalur menuju tank saat ini.'
-      : (droneState === 'investigating'
-          ? 'Drone tidak menemukan jalur menuju posisi terakhir tank.'
-          : 'Drone tidak menemukan jalur menuju titik sisiran berikutnya.');
-    return;
-  }
+        if (!result.found) {
+          statusBox.textContent = detected
+            ? "Drone tidak menemukan jalur menuju tank saat ini."
+            : droneState === "investigating"
+              ? "Drone tidak menemukan jalur menuju posisi terakhir tank."
+              : "Drone tidak menemukan jalur menuju titik sisiran berikutnya.";
+          return;
+        }
 
-  if(result.path.length > 1){
-    drone = { r: result.path[1].r, c: result.path[1].c };
-  }
-  visitedCells.add(drone.r + ',' + drone.c);
+        if (result.path.length > 1) {
+          drone = { r: result.path[1].r, c: result.path[1].c };
+        }
+        visitedCells.add(drone.r + "," + drone.c);
 
-  if(drone.r === tank.r && drone.c === tank.c){
-    gameOver = true;
-    lastKnownPos = null;
-    statusBox.textContent = 'Drone berhasil menemukan posisi tank! Tekan "Reset Posisi" untuk main lagi.';
-    statusBox.classList.add('caught');
-    if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
-  } else if(detected){
-    statusBox.textContent = 'Tank terdeteksi! Drone mengejar dan terus menghitung ulang jalurnya...';
-    statusBox.classList.remove('caught');
-  } else if(droneState === 'investigating'){
-    statusBox.textContent = 'Kontak terputus. Drone mengingat posisi terakhir tank dan menuju ke sana...';
-    statusBox.classList.remove('caught');
-  } else {
-    statusBox.textContent = 'Tidak ada tanda-tanda di posisi terakhir. Drone melanjutkan pola pencarian...';
-    statusBox.classList.remove('caught');
-  }
-}
+        if (drone.r === tank.r && drone.c === tank.c) {
+          gameOver = true;
+          lastKnownPos = null;
+          statusBox.textContent =
+            'Drone berhasil menemukan posisi tank! Tekan "Reset Posisi" untuk main lagi.';
+          statusBox.classList.add("caught");
+          if (autoTimer) {
+            clearInterval(autoTimer);
+            autoTimer = null;
+          }
+        } else if (detected) {
+          statusBox.textContent =
+            "Tank terdeteksi! Drone mengejar dan terus menghitung ulang jalurnya...";
+          statusBox.classList.remove("caught");
+        } else if (droneState === "investigating") {
+          statusBox.textContent =
+            "Kontak terputus. Drone mengingat posisi terakhir tank dan menuju ke sana...";
+          statusBox.classList.remove("caught");
+        } else {
+          statusBox.textContent =
+            "Tidak ada tanda-tanda di posisi terakhir. Drone melanjutkan pola pencarian...";
+          statusBox.classList.remove("caught");
+        }
+      }
 
-// BARU — melanjutkan pola pencarian preset (boustrophedon). Kalau drone
-// sudah sampai di waypoint saat ini, maju ke waypoint berikutnya (indeks
-// dibuat melingkar/modulo supaya drone terus menyisir berulang selama
-// permainan berjalan). Kalau drone sempat mengejar lalu kontak terputus,
-// pencarian DILANJUTKAN dari searchIndex terakhir, bukan diulang dari nol.
-//
-// PERBAIKAN — sebelumnya, kalau SATU waypoint kebetulan berada di kantong
-// sel yang terkunci (mis. dikelilingi pohon/batu/sungai tanpa jembatan
-// sehingga tak terhubung ke posisi drone lewat jalur manapun), search()
-// gagal terus tiap giliran dan drone diam macet permanen di situ. Sekarang
-// kalau sebuah target terbukti TIDAK terjangkau, waypoint itu dilewati
-// (dianggap sudah "diperiksa" walau tak pernah didatangi fisik) dan drone
-// langsung mencoba waypoint berikutnya, diulang sampai ketemu satu yang
-// bisa dicapai atau seluruh pola sudah dicoba (mencegah infinite loop
-// kalau drone sendiri terjebak di kantong terisolasi).
-function continueSearchPattern(){
-  if(searchPattern.length === 0){
-    return { path: [], cost: Infinity, expandedCount: 0, timeMs: 0, found: false };
-  }
-  let attempts = 0;
-  while(attempts < searchPattern.length){
-    let target = searchPattern[searchIndex];
+      // BARU — melanjutkan pola pencarian preset (boustrophedon). Kalau drone
+      // sudah sampai di waypoint saat ini, maju ke waypoint berikutnya (indeks
+      // dibuat melingkar/modulo supaya drone terus menyisir berulang selama
+      // permainan berjalan). Kalau drone sempat mengejar lalu kontak terputus,
+      // pencarian DILANJUTKAN dari searchIndex terakhir, bukan diulang dari nol.
+      //
+      // PERBAIKAN — sebelumnya, kalau SATU waypoint kebetulan berada di kantong
+      // sel yang terkunci (mis. dikelilingi pohon/batu/sungai tanpa jembatan
+      // sehingga tak terhubung ke posisi drone lewat jalur manapun), search()
+      // gagal terus tiap giliran dan drone diam macet permanen di situ. Sekarang
+      // kalau sebuah target terbukti TIDAK terjangkau, waypoint itu dilewati
+      // (dianggap sudah "diperiksa" walau tak pernah didatangi fisik) dan drone
+      // langsung mencoba waypoint berikutnya, diulang sampai ketemu satu yang
+      // bisa dicapai atau seluruh pola sudah dicoba (mencegah infinite loop
+      // kalau drone sendiri terjebak di kantong terisolasi).
+      function continueSearchPattern() {
+        if (searchPattern.length === 0) {
+          return {
+            path: [],
+            cost: Infinity,
+            expandedCount: 0,
+            timeMs: 0,
+            found: false,
+          };
+        }
+        let attempts = 0;
+        while (attempts < searchPattern.length) {
+          let target = searchPattern[searchIndex];
 
-    if(drone.r === target.r && drone.c === target.c){
-      // sudah tepat di waypoint ini -> catat, lalu maju ke berikutnya
-      visitedCells.add(drone.r + ',' + drone.c);
-      searchIndex = (searchIndex + 1) % searchPattern.length;
-      attempts++;
-      continue;
-    }
+          if (drone.r === target.r && drone.c === target.c) {
+            // sudah tepat di waypoint ini -> catat, lalu maju ke berikutnya
+            visitedCells.add(drone.r + "," + drone.c);
+            searchIndex = (searchIndex + 1) % searchPattern.length;
+            attempts++;
+            continue;
+          }
 
-    const result = search(grid, drone, target, algoSelect.value, heurSelect.value);
-    if(result.found) return result;
+          const result = search(
+            grid,
+            drone,
+            target,
+            algoSelect.value,
+            heurSelect.value,
+          );
+          if (result.found) return result;
 
-    // target ini tak terjangkau dari posisi drone sekarang -> lewati saja
-    searchIndex = (searchIndex + 1) % searchPattern.length;
-    attempts++;
-  }
-  // seluruh pola sudah dicoba dan tidak ada satupun waypoint terjangkau
-  // (drone kemungkinan besar terjebak sendiri di kantong terisolasi).
-  return { path: [], cost: Infinity, expandedCount: 0, timeMs: 0, found: false };
-}
+          // target ini tak terjangkau dari posisi drone sekarang -> lewati saja
+          searchIndex = (searchIndex + 1) % searchPattern.length;
+          attempts++;
+        }
+        // seluruh pola sudah dicoba dan tidak ada satupun waypoint terjangkau
+        // (drone kemungkinan besar terjebak sendiri di kantong terisolasi).
+        return {
+          path: [],
+          cost: Infinity,
+          expandedCount: 0,
+          timeMs: 0,
+          found: false,
+        };
+      }
 
-function renderStats(result){
-  const algoLabel = algoSelect.value === 'ucs' ? 'UCS' : 'A* (' + heurSelect.value + ')';
-  statsBox.textContent =
-`Algoritma      : ${algoLabel}
-Jalur ditemukan: ${result.found ? 'ya' : 'tidak'}
-Biaya jalur     : ${result.found ? result.cost : '-'}
+      function renderStats(result) {
+        const algoLabel =
+          algoSelect.value === "ucs" ? "UCS" : "A* (" + heurSelect.value + ")";
+        statsBox.textContent = `Algoritma      : ${algoLabel}
+Jalur ditemukan: ${result.found ? "ya" : "tidak"}
+Biaya jalur     : ${result.found ? result.cost : "-"}
 Node diekspansi : ${result.expandedCount}
 Waktu komputasi : ${result.timeMs.toFixed(3)} ms`;
-}
+      }
 
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 7 — KONTROL KEYBOARD & TOMBOL UI
    ===================================================================== */
-window.addEventListener('keydown', (e) => {
-  const map = {
-    ArrowUp: [-1,0], ArrowDown: [1,0], ArrowLeft: [0,-1], ArrowRight: [0,1],
-    w: [-1,0], s: [1,0], a: [0,-1], d: [0,1]
-  };
-  const move = map[e.key];
-  if(move){
-    e.preventDefault();
-    tryMoveTank(move[0], move[1]);
-  }
-});
+      window.addEventListener("keydown", (e) => {
+        const map = {
+          ArrowUp: [-1, 0],
+          ArrowDown: [1, 0],
+          ArrowLeft: [0, -1],
+          ArrowRight: [0, 1],
+          w: [-1, 0],
+          s: [1, 0],
+          a: [0, -1],
+          d: [0, 1],
+        };
+        const move = map[e.key];
+        if (move) {
+          e.preventDefault();
+          tryMoveTank(move[0], move[1]);
+        }
+      });
 
-function resetDroneKnowledge(){
-  // Dipanggil setiap kali medan atau posisi direset: drone "lupa" segala
-  // yang pernah ia ketahui (termasuk posisi terakhir tank) dan mulai
-  // menyisir dari awal pola lagi.
-  droneState = 'searching';
-  searchPattern = generateSearchPattern(grid);
-  searchIndex = 0;
-  visitedCells = new Set();
-  lastKnownPos = null;
-  droneStateBox.textContent = 'MENYISIR (belum tahu posisi tank)';
-}
+      function resetDroneKnowledge() {
+        // Dipanggil setiap kali medan atau posisi direset: drone "lupa" segala
+        // yang pernah ia ketahui (termasuk posisi terakhir tank) dan mulai
+        // menyisir dari awal pola lagi.
+        droneState = "searching";
+        searchPattern = generateSearchPattern(grid);
+        searchIndex = 0;
+        visitedCells = new Set();
+        lastKnownPos = null;
+        droneStateBox.textContent = "MENYISIR (belum tahu posisi tank)";
+      }
 
-document.getElementById('btnRandomMap').addEventListener('click', () => {
-  // BARU — "Acak Medan" sekarang juga mengacak SEPASANG posisi awal
-  // drone & tank yang baru (tidak selalu pojok), lalu menjadikannya
-  // titik awal resmi medan yang baru ini untuk tombol "Reset Posisi".
-  const picked = pickRandomStartPositions();
-  initialDronePos = picked.dronePos;
-  initialTankPos = picked.tankPos;
-  tank = { ...initialTankPos };
-  drone = { ...initialDronePos };
-  tankDir = { dr: 0, dc: -1 };
-  grid = generateMap(drone, tank);
-  lastPath = [];
-  gameOver = false;
-  resetDroneKnowledge();
-  startIntroSequence();
-});
+      document.getElementById("btnRandomMap").addEventListener("click", () => {
+        // BARU — "Acak Medan" sekarang juga mengacak SEPASANG posisi awal
+        // drone & tank yang baru (tidak selalu pojok), lalu menjadikannya
+        // titik awal resmi medan yang baru ini untuk tombol "Reset Posisi".
+        const picked = pickRandomStartPositions();
+        initialDronePos = picked.dronePos;
+        initialTankPos = picked.tankPos;
+        tank = { ...initialTankPos };
+        drone = { ...initialDronePos };
+        tankDir = { dr: 0, dc: -1 };
+        grid = generateMap(drone, tank);
+        lastPath = [];
+        gameOver = false;
+        resetDroneKnowledge();
+        startIntroSequence();
+      });
 
-document.getElementById('btnResetPos').addEventListener('click', () => {
-  // "Reset Posisi" mengembalikan tank & drone ke titik awal medan yang
-  // SEDANG dipakai (initialDronePos/initialTankPos), TANPA mengacak
-  // posisi baru — kalau mau posisi baru, pakai "Acak Medan".
-  tank = { ...initialTankPos };
-  drone = { ...initialDronePos };
-  tankDir = { dr: 0, dc: -1 };
-  lastPath = [];
-  gameOver = false;
-  resetDroneKnowledge();
-  startIntroSequence();
-});
+      document.getElementById("btnResetPos").addEventListener("click", () => {
+        // "Reset Posisi" mengembalikan tank & drone ke titik awal medan yang
+        // SEDANG dipakai (initialDronePos/initialTankPos), TANPA mengacak
+        // posisi baru — kalau mau posisi baru, pakai "Acak Medan".
+        tank = { ...initialTankPos };
+        drone = { ...initialDronePos };
+        tankDir = { dr: 0, dc: -1 };
+        lastPath = [];
+        gameOver = false;
+        resetDroneKnowledge();
+        startIntroSequence();
+      });
 
-document.getElementById('autoChase').addEventListener('change', (e) => {
-  if(e.target.checked){
-    autoTimer = setInterval(() => {
-      // BARU — selama sekuens pemindaian awal masih berjalan, giliran
-      // otomatis ini tidak boleh ikut menggerakkan drone; droneTurn()
-      // sendiri sudah menjaga hal ini, di sini cukup dilewati saja.
-      if(introPhase) return;
-      droneTurn();
-      draw();
-    }, 450);
-  } else if(autoTimer){
-    clearInterval(autoTimer);
-    autoTimer = null;
-  }
-});
+      document.getElementById("autoChase").addEventListener("change", (e) => {
+        if (e.target.checked) {
+          autoTimer = setInterval(() => {
+            // BARU — selama sekuens pemindaian awal masih berjalan, giliran
+            // otomatis ini tidak boleh ikut menggerakkan drone; droneTurn()
+            // sendiri sudah menjaga hal ini, di sini cukup dilewati saja.
+            if (introPhase) return;
+            droneTurn();
+            draw();
+          }, 450);
+        } else if (autoTimer) {
+          clearInterval(autoTimer);
+          autoTimer = null;
+        }
+      });
 
-/* =====================================================================
+      /* =====================================================================
    BAGIAN 8 — EKSPERIMEN: MEMBANDINGKAN UCS vs A* DENGAN 3 HEURISTIK
    ===================================================================== */
-document.getElementById('btnExperiment').addEventListener('click', () => {
-  const combos = [
-    { label: 'UCS',              algo: 'ucs',   heur: 'zero' },
-    { label: 'A* + Manhattan',   algo: 'astar', heur: 'manhattan' },
-    { label: 'A* + Euclidean',   algo: 'astar', heur: 'euclidean' },
-    { label: 'A* + Chebyshev',   algo: 'astar', heur: 'chebyshev' }
-  ];
+      document.getElementById("btnExperiment").addEventListener("click", () => {
+        const combos = [
+          { label: "UCS", algo: "ucs", heur: "zero" },
+          { label: "A* + Manhattan", algo: "astar", heur: "manhattan" },
+          { label: "A* + Euclidean", algo: "astar", heur: "euclidean" },
+          { label: "A* + Chebyshev", algo: "astar", heur: "chebyshev" },
+        ];
 
-  const results = combos.map(cfg => {
-    const r = search(grid, drone, tank, cfg.algo, cfg.heur);
-    return { ...cfg, ...r };
-  });
+        const results = combos.map((cfg) => {
+          const r = search(grid, drone, tank, cfg.algo, cfg.heur);
+          return { ...cfg, ...r };
+        });
 
-  const minExpanded = Math.min(...results.map(r => r.expandedCount));
+        const minExpanded = Math.min(...results.map((r) => r.expandedCount));
 
-  let html = '<table class="exp"><tr><th>Kombinasi</th><th>Node</th><th>Biaya</th><th>ms</th></tr>';
-  for(const r of results){
-    const isBest = r.expandedCount === minExpanded;
-    html += `<tr class="${isBest ? 'best' : ''}">
+        let html =
+          '<table class="exp"><tr><th>Kombinasi</th><th>Node</th><th>Biaya</th><th>ms</th></tr>';
+        for (const r of results) {
+          const isBest = r.expandedCount === minExpanded;
+          html += `<tr class="${isBest ? "best" : ""}">
       <td>${r.label}</td>
       <td>${r.expandedCount}</td>
-      <td>${r.found ? r.cost : '-'}</td>
+      <td>${r.found ? r.cost : "-"}</td>
       <td>${r.timeMs.toFixed(2)}</td>
     </tr>`;
-  }
-  html += '</table>';
-  document.getElementById('expResult').innerHTML = html;
+        }
+        html += "</table>";
+        document.getElementById("expResult").innerHTML = html;
 
-  const best = results.find(r => r.expandedCount === minExpanded);
-  document.getElementById('expNote').textContent =
-    `Pada posisi ini, "${best.label}" mengekspansi node paling sedikit (${best.expandedCount}). ` +
-    `Karena gerakan hanya 4 arah, heuristik Manhattan biasanya menang karena nilainya paling ` +
-    `mendekati biaya asli tanpa pernah melebihi (tetap admissible), sehingga A* memangkas ` +
-    `lebih banyak cabang pencarian dibanding UCS, Euclidean, atau Chebyshev. ` +
-    `Catatan: eksperimen ini membandingkan jalur KEJAR drone->tank secara langsung (seolah ` +
-    `tank sudah terdeteksi), bukan pola sisir yang dipakai selagi posisi tank belum diketahui.`;
-});
+        const best = results.find((r) => r.expandedCount === minExpanded);
+        document.getElementById("expNote").textContent =
+          `Pada posisi ini, "${best.label}" mengekspansi node paling sedikit (${best.expandedCount}). ` +
+          `Karena gerakan hanya 4 arah, heuristik Manhattan biasanya menang karena nilainya paling ` +
+          `mendekati biaya asli tanpa pernah melebihi (tetap admissible), sehingga A* memangkas ` +
+          `lebih banyak cabang pencarian dibanding UCS, Euclidean, atau Chebyshev. ` +
+          `Catatan: eksperimen ini membandingkan jalur KEJAR drone->tank secara langsung (seolah ` +
+          `tank sudah terdeteksi), bukan pola sisir yang dipakai selagi posisi tank belum diketahui.`;
+      });
 
-/* =====================================================================
+      /* =====================================================================
    INISIALISASI
    ===================================================================== */
-startIntroSequence();
-</script>
-</body>
+      startIntroSequence();
+    </script>
+  </body>
 </html>
