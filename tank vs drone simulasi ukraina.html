@@ -281,7 +281,7 @@
           >
           <span
             ><i class="swatch" style="background: var(--bridge)"></i>Jembatan
-            (biaya 0, tank & drone)</span
+            (biaya 1, tank & drone)</span
           >
           <span
             ><i class="swatch" style="background: var(--artillery-body)"></i
@@ -421,10 +421,10 @@
       // (dengan biaya tambahan karena harus naik/hati-hati), sementara artileri
       // di peta ini adalah artileri ANTI-UDARA — tetap menghalangi drone secara
       // mutlak, walau tidak menghalangi tank di darat.
-      const TANK_TERRAIN_COST = { [DIRT]: 1, [BRIDGE]: 0 };
+      const TANK_TERRAIN_COST = { [DIRT]: 1, [BRIDGE]: 1 };
       const DRONE_TERRAIN_COST = {
         [DIRT]: 1,
-        [BRIDGE]: 0,
+        [BRIDGE]: 1,
         [ROCK]: 2, // terbang melewati bebatuan — sedikit lebih lambat/hati-hati
         [RUIN]: 2, // terbang melewati reruntuhan — sama seperti bebatuan
         [RIVER]: 2, // terbang melintasi sungai — tidak perlu jembatan
