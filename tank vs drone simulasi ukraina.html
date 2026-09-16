@@ -85,10 +85,19 @@
         padding: 28px 16px;
       }
       .app {
-        display: flex;
+        display: grid;
+        grid-template-columns: 660px 320px;
+        align-items: start;
         gap: 22px;
-        flex-wrap: wrap;
         max-width: 1040px;
+      }
+      /* Di layar sempit (mis. tablet/HP), baru turun jadi 1 kolom
+         supaya tidak overflow horizontal; di atas breakpoint ini
+         panel SELALU ada di kanan papan permainan. */
+      @media (max-width: 1015px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
       }
       .stage {
         display: flex;
@@ -410,7 +419,7 @@
       const TREE = 1; // pohon, terblokir
       const ROCK = 2; // bebatuan, terblokir
       const RIVER = 3; // sungai, terblokir kecuali di sel jembatan
-      const BRIDGE = 4; // jembatan, biaya 3
+      const BRIDGE = 4; // jembatan, biaya 1
       const ARTILLERY = 5; // artileri musuh yang ditinggalkan, terblokir
       const CAMP = 6; // kamp tentara (blok 2x2), terblokir
       const RUIN = 7; // bangunan runtuh (blok 2x2), terblokir
