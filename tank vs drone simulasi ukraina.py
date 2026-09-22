@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Tank vs Drone -- UCS vs A* Pathfinding (versi Pygame)
 ======================================================
