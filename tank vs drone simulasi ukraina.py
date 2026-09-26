@@ -9,11 +9,21 @@ dengan versi web-nya. Bagian visual disederhanakan supaya cocok
 digambar dengan primitif Pygame (rect/circle/line), bukan re-implementasi
 1:1 dari canvas API.
 
+Mode Battle (Minimax/Alpha-Beta): begitu drone cukup dekat dengan tank,
+permainan berpindah dari mode eksplorasi (UCS/A* di grid) ke mode battle
+-- sebuah sub-sistem terpisah dengan state sederhana (HP, potion, status
+bertahan) yang dikendalikan lewat adversarial search (Minimax / Alpha-Beta
+pruning), bukan lagi pathfinding.
+
 Kontrol:
-  - Panah / WASD           : gerakkan tank
+  - Panah / WASD           : gerakkan tank (mode eksplorasi)
   - Klik tombol di panel kanan : ganti algoritma / heuristik / radius
                                   pandang, acak medan, reset posisi,
                                   toggle auto-chase, jalankan eksperimen
+  - Mode Battle             : [1] Serang  [2] Bertahan  [3] Potion
+                               [B] toggle alpha-beta   [,] / [.] ubah depth
+                               [T] tampilkan/sembunyikan pohon pencarian (debug)
+                               [ [ ] ubah kedalaman pohon yang digambar
 """
 
 import math
@@ -572,6 +582,665 @@ def wrap_text(text, font, max_width):
 
 
 # =============================================================================
+# BAGIAN 5B -- MODE BATTLE: MINIMAX / ALPHA-BETA (ADVERSARIAL SEARCH)
+# =============================================================================
+# Begitu drone cukup dekat dengan tank, permainan berpindah dari pathfinding
+# di grid (UCS/A*) ke sub-sistem battle terpisah yang state-nya sederhana
+# (HP, potion, status bertahan) dan dikendalikan Minimax/Alpha-Beta.
+#
+# Dua kelas algoritma pencarian AI yang berbeda dipakai untuk dua masalah
+# yang berbeda:
+#   - A* / UCS   -> pathfinding: pencarian rute di ruang keadaan grid.
+#   - Minimax    -> pengambilan keputusan adversarial: game dua pemain,
+#                   giliran bergantian, tujuan berlawanan.
+
+PLAYER = "PLAYER"
+NPC = "NPC"
+
+ACT_ATTACK = "ATTACK"
+ACT_DEFEND = "DEFEND"
+ACT_POTION = "POTION"
+
+BATTLE_MAX_HP = 100
+BATTLE_START_POTIONS = 3
+ATTACK_DAMAGE = 18
+DEFEND_REDUCTION = 0.5          # damage masuk dikurangi 50% kalau lawan bertahan
+POTION_HEAL = 30
+
+BATTLE_WIN_SCORE = 1000.0
+BATTLE_DEFAULT_DEPTH = 4        # MAX_DEPTH -- batas cutoff, branching <=3 aksi
+
+# Bobot fungsi evaluasi heuristik (dipakai di cutoff non-terminal, BUKAN utility)
+EVAL_W1 = 1.0    # selisih HP (agresivitas)
+EVAL_W2 = 6.0    # selisih jumlah potion (penghargaan resource)
+EVAL_W3 = 8.0    # bonus/penalti status bertahan
+
+BATTLE_TRIGGER_DISTANCE = 1     # jarak (Manhattan) drone<->tank yang memicu battle
+BATTLE_END_PAUSE_MS = 1800      # jeda menampilkan hasil sebelum kembali ke eksplorasi
+BATTLE_LOG_MAX = 6
+
+
+class BattleState:
+    """State battle sederhana: HP, potion, status bertahan, giliran.
+
+    s = (playerHP, npcHP, playerPotions, npcPotions,
+         playerDefending, npcDefending, turnOwner, turnIndex)
+    """
+    __slots__ = (
+        "playerHP", "npcHP", "playerPotions", "npcPotions",
+        "playerDefending", "npcDefending", "turnOwner", "turnIndex",
+    )
+
+    def __init__(self, playerHP, npcHP, playerPotions, npcPotions,
+                 playerDefending, npcDefending, turnOwner, turnIndex):
+        self.playerHP = playerHP
+        self.npcHP = npcHP
+        self.playerPotions = playerPotions
+        self.npcPotions = npcPotions
+        self.playerDefending = playerDefending
+        self.npcDefending = npcDefending
+        self.turnOwner = turnOwner
+        self.turnIndex = turnIndex
+
+    @staticmethod
+    def initial():
+        return BattleState(
+            playerHP=BATTLE_MAX_HP, npcHP=BATTLE_MAX_HP,
+            playerPotions=BATTLE_START_POTIONS, npcPotions=BATTLE_START_POTIONS,
+            playerDefending=False, npcDefending=False,
+            turnOwner=PLAYER, turnIndex=0,
+        )
+
+    def is_terminal(self):
+        """Terminal(s) = (playerHP <= 0) or (npcHP <= 0)."""
+        return self.playerHP <= 0 or self.npcHP <= 0
+
+    def legal_actions(self):
+        """Branching <=3: ATTACK, DEFEND selalu ada; POTION hilang kalau stok habis."""
+        actions = [ACT_ATTACK, ACT_DEFEND]
+        potions = self.playerPotions if self.turnOwner == PLAYER else self.npcPotions
+        if potions > 0:
+            actions.append(ACT_POTION)
+        return actions
+
+    def apply_action(self, action):
+        """Kembalikan BattleState BARU (tidak memutasi state ini) supaya aman
+        dipakai berulang kali di pohon pencarian minimax."""
+        if self.turnOwner == PLAYER:
+            own_hp, opp_hp = self.playerHP, self.npcHP
+            own_potions = self.playerPotions
+            opp_defending = self.npcDefending
+        else:
+            own_hp, opp_hp = self.npcHP, self.playerHP
+            own_potions = self.npcPotions
+            opp_defending = self.playerDefending
+
+        new_opp_hp = opp_hp
+        new_own_hp = own_hp
+        new_own_potions = own_potions
+
+        if action == ACT_ATTACK:
+            dmg = ATTACK_DAMAGE
+            if opp_defending:
+                dmg *= (1.0 - DEFEND_REDUCTION)
+            new_opp_hp = opp_hp - dmg
+        elif action == ACT_POTION:
+            new_own_hp = min(BATTLE_MAX_HP, own_hp + POTION_HEAL)
+            new_own_potions = own_potions - 1
+        # ACT_DEFEND: tidak menyerang, tidak memulihkan -- hanya set flag di bawah
+
+        new_own_defending = (action == ACT_DEFEND)
+        new_opponent = NPC if self.turnOwner == PLAYER else PLAYER
+
+        if self.turnOwner == PLAYER:
+            return BattleState(
+                playerHP=new_own_hp, npcHP=new_opp_hp,
+                playerPotions=new_own_potions, npcPotions=self.npcPotions,
+                playerDefending=new_own_defending, npcDefending=opp_defending,
+                turnOwner=new_opponent, turnIndex=self.turnIndex + 1,
+            )
+        else:
+            return BattleState(
+                playerHP=new_opp_hp, npcHP=new_own_hp,
+                playerPotions=self.playerPotions, npcPotions=new_own_potions,
+                playerDefending=opp_defending, npcDefending=new_own_defending,
+                turnOwner=new_opponent, turnIndex=self.turnIndex + 1,
+            )
+
+
+def battle_utility(state):
+    """U(s) -- hanya didefinisikan di terminal SEJATI, sudut pandang NPC (MAX).
+
+    U(s) = +WIN_SCORE - turnIndex   jika playerHP <= 0 (NPC menang)
+    U(s) = -WIN_SCORE + turnIndex   jika npcHP <= 0    (player menang)
+
+    -turnIndex / +turnIndex membuat NPC lebih menyukai kemenangan cepat
+    dan kekalahan lambat -- ini asumsi desain, bukan hasil perhitungan.
+    """
+    if state.playerHP <= 0:
+        return BATTLE_WIN_SCORE - state.turnIndex
+    return -BATTLE_WIN_SCORE + state.turnIndex
+
+
+def battle_eval_default(state):
+    """Eval(s) -- dipakai di cutoff NON-terminal (depth limit), bukan utility.
+    Heuristik "masuk akal", bukan nilai eksak."""
+    score = EVAL_W1 * (state.npcHP - state.playerHP)
+    score += EVAL_W2 * (state.npcPotions - state.playerPotions)
+    score += EVAL_W3 * (1 if state.npcDefending else 0)
+    score -= EVAL_W3 * (1 if state.playerDefending else 0)
+    return score
+
+
+class TreeNode:
+    """Satu node di pohon pencarian minimax, dicatat untuk visualisasi debug.
+
+    `action`  -- aksi yang membawa dari parent ke node ini (None untuk root).
+    `owner`   -- 'MAX' (giliran NPC) atau 'MIN' (giliran player) di node ini.
+    `kind`    -- 'internal' | 'terminal' | 'cutoff' (lihat Cutoff(s, depth) di desain).
+    `pruned`  -- True kalau node ini sendiri TIDAK PERNAH dieksplorasi karena
+                 alpha-beta memangkas cabang saudaranya (dipakai untuk menggambar
+                 cabang yang terpotong, contoh klasik "move ordering" di laporan).
+    """
+    __slots__ = ("action", "depth", "owner", "value", "kind", "pruned", "children", "x", "y")
+
+    def __init__(self, action, depth, owner=None):
+        self.action = action
+        self.depth = depth
+        self.owner = owner
+        self.value = None
+        self.kind = None
+        self.pruned = False
+        self.children = []
+        self.x = 0.0
+        self.y = 0.0
+
+
+class MinimaxAgent:
+    """Agen NPC: memilih aksi lewat minimax / alpha-beta pruning.
+
+    Mencatat nodes_expanded & root_action_scores -- persis yang dibutuhkan
+    untuk debug overlay di BattleHUD -- dan opsional membangun `last_tree`
+    (TreeNode) untuk divisualisasikan sebagai pohon (lihat TreeView/BattleHUD).
+    """
+
+    def __init__(self):
+        self.nodes_expanded = 0
+        self.root_action_scores = []  # [(action, score), ...] milik keputusan terakhir
+        self.last_tree = None         # TreeNode root milik keputusan terakhir (untuk visualisasi)
+
+    def _minimax(self, state, depth, alpha, beta, max_depth, use_ab, eval_fn, node):
+        self.nodes_expanded += 1
+        if node is not None:
+            node.owner = "MAX" if state.turnOwner == NPC else "MIN"
+
+        # Cutoff(s, depth) = Terminal(s) or (depth >= MAX_DEPTH)
+        if state.is_terminal():
+            val = battle_utility(state)            # terminal sejati -> utility
+            if node is not None:
+                node.kind = "terminal"
+                node.value = val
+            return val
+        if depth >= max_depth:
+            val = eval_fn(state)                    # cutoff karena depth -> evaluation
+            if node is not None:
+                node.kind = "cutoff"
+                node.value = val
+            return val
+
+        if node is not None:
+            node.kind = "internal"
+
+        actions = state.legal_actions()
+        if state.turnOwner == NPC:  # node MAX
+            best = -math.inf
+            for i, a in enumerate(actions):
+                child = TreeNode(a, depth + 1) if node is not None else None
+                val = self._minimax(state.apply_action(a), depth + 1, alpha, beta, max_depth, use_ab, eval_fn, child)
+                if child is not None:
+                    child.value = val
+                    node.children.append(child)
+                if val > best:
+                    best = val
+                if use_ab:
+                    alpha = max(alpha, best)
+                    if alpha >= beta:
+                        if node is not None:
+                            for remaining in actions[i + 1:]:
+                                stub = TreeNode(remaining, depth + 1)
+                                stub.pruned = True
+                                node.children.append(stub)
+                        break  # beta cutoff
+            if node is not None:
+                node.value = best
+            return best
+        else:  # node MIN
+            best = math.inf
+            for i, a in enumerate(actions):
+                child = TreeNode(a, depth + 1) if node is not None else None
+                val = self._minimax(state.apply_action(a), depth + 1, alpha, beta, max_depth, use_ab, eval_fn, child)
+                if child is not None:
+                    child.value = val
+                    node.children.append(child)
+                if val < best:
+                    best = val
+                if use_ab:
+                    beta = min(beta, best)
+                    if beta <= alpha:
+                        if node is not None:
+                            for remaining in actions[i + 1:]:
+                                stub = TreeNode(remaining, depth + 1)
+                                stub.pruned = True
+                                node.children.append(stub)
+                        break  # alpha cutoff
+            if node is not None:
+                node.value = best
+            return best
+
+    def choose_action(self, state, depth=BATTLE_DEFAULT_DEPTH, use_alpha_beta=True,
+                       eval_fn=battle_eval_default, build_tree=True):
+        self.nodes_expanded = 0
+        self.root_action_scores = []
+        self.last_tree = None
+
+        alpha, beta = -math.inf, math.inf
+        best_action = None
+        best_score = -math.inf
+
+        root = TreeNode(None, 0, "MAX" if state.turnOwner == NPC else "MIN") if build_tree else None
+
+        # Catatan: di root sendiri SEMUA aksi tetap dicoba (tidak dipangkas) supaya
+        # root_action_scores lengkap untuk overlay debug -- pruning hanya terjadi
+        # di level yang lebih dalam.
+        for a in state.legal_actions():
+            child_state = state.apply_action(a)
+            child_node = TreeNode(a, 1) if build_tree else None
+            score = self._minimax(child_state, 1, alpha, beta, depth, use_alpha_beta, eval_fn, child_node)
+            if child_node is not None:
+                child_node.value = score
+                root.children.append(child_node)
+            self.root_action_scores.append((a, score))
+            if score > best_score:
+                best_score = score
+                best_action = a
+            if use_alpha_beta:
+                alpha = max(alpha, best_score)
+
+        if build_tree:
+            root.value = best_score
+            root.kind = "internal"
+            self.last_tree = root
+
+        return best_action
+
+
+# -----------------------------------------------------------------------
+# Visualisasi pohon pencarian (debug): layout + gambar TreeNode sebagai
+# kotak-kotak yang terhubung garis, mirip diagram pohon minimax di textbook.
+# Kedalaman yang digambar (vis_depth) sengaja dibatasi terpisah dari
+# kedalaman pencarian sesungguhnya (bisa sampai 6) supaya tetap terbaca --
+# node di batas vis_depth yang masih punya anak diberi label "+N cabang...".
+# -----------------------------------------------------------------------
+TREE_ROW_GAP = 60
+TREE_NODE_H = 34
+TREE_MARGIN_X = 40
+
+
+def _tree_visible_children(node, vis_depth):
+    if node.depth >= vis_depth:
+        return []
+    return node.children
+
+
+def _tree_count_leaves(node, vis_depth):
+    children = _tree_visible_children(node, vis_depth)
+    if not children:
+        return 1
+    return sum(_tree_count_leaves(c, vis_depth) for c in children)
+
+
+def _tree_best_fit_depth(root, requested_depth, max_leaves):
+    """Kalau requested_depth bikin daun > max_leaves, turunkan depth tampilan
+    bertahap supaya pohon tetap terbaca di lebar layar yang tersedia."""
+    d = min(requested_depth, root.depth + 6)
+    d = max(1, d)
+    while d > 1 and _tree_count_leaves(root, d) > max_leaves:
+        d -= 1
+    return d
+
+
+def _tree_assign_positions(node, vis_depth, node_w, gap, leaf_counter, origin_x, origin_y):
+    node.y = origin_y + node.depth * TREE_ROW_GAP
+    children = _tree_visible_children(node, vis_depth)
+    if not children:
+        node.x = origin_x + leaf_counter[0] * (node_w + gap) + node_w / 2.0
+        leaf_counter[0] += 1
+        return node.x
+    xs = [_tree_assign_positions(c, vis_depth, node_w, gap, leaf_counter, origin_x, origin_y) for c in children]
+    node.x = sum(xs) / len(xs)
+    return node.x
+
+
+def draw_search_tree(screen, fonts, root, vis_depth, area):
+    """Gambar pohon pencarian NPC (root = TreeNode) di dalam `area` (pygame.Rect)."""
+    font_small = fonts["small"]
+
+    if root is None:
+        t = fonts["ui"].render("Belum ada pohon pencarian -- tunggu NPC mengambil keputusan.", True, COLORS["text_dim"])
+        screen.blit(t, (area.x + 20, area.y + 20))
+        return
+
+    avail_w = max(200, area.w - 2 * TREE_MARGIN_X)
+    max_leaves = max(1, avail_w // 40)
+    eff_depth = _tree_best_fit_depth(root, vis_depth, max_leaves)
+
+    leaves = _tree_count_leaves(root, eff_depth)
+    node_w = int(max(30, min(96, avail_w / leaves - 12)))
+    gap = 12
+
+    leaf_counter = [0]
+    _tree_assign_positions(root, eff_depth, node_w, gap, leaf_counter, area.x + TREE_MARGIN_X, area.y + 20)
+
+    show_text = node_w >= 40
+
+    def draw_edges(node):
+        for c in _tree_visible_children(node, eff_depth):
+            col = (76, 70, 58) if not c.pruned else (58, 50, 46)
+            pygame.draw.line(
+                screen, col,
+                (node.x, node.y + TREE_NODE_H / 2), (c.x, c.y - TREE_NODE_H / 2),
+                1,
+            )
+            draw_edges(c)
+
+    draw_edges(root)
+
+    def draw_node(node):
+        rect = pygame.Rect(0, 0, node_w, TREE_NODE_H)
+        rect.center = (int(node.x), int(node.y))
+
+        if node.pruned:
+            bg, border = (40, 38, 33), (110, 70, 62)
+        elif node.owner == "MAX":
+            bg, border = (46, 39, 30), COLORS["drone"]
+        else:
+            bg, border = (33, 39, 29), COLORS["tank"]
+        pygame.draw.rect(screen, bg, rect, border_radius=6)
+        width = 2 if node.kind == "terminal" else 1
+        pygame.draw.rect(screen, border, rect, width=width, border_radius=6)
+
+        if show_text:
+            label = node.action if node.action else "ROOT"
+            if node.pruned:
+                t1 = font_small.render(label, True, (150, 120, 110))
+                t2 = font_small.render("(prune)", True, (130, 105, 98))
+            else:
+                val_txt = f"{node.value:.1f}" if node.value is not None else "?"
+                t1 = font_small.render(label, True, COLORS["text_cream"])
+                t2 = font_small.render(val_txt, True, COLORS["text_dim"])
+            screen.blit(t1, t1.get_rect(center=(rect.centerx, rect.centery - 7)))
+            screen.blit(t2, t2.get_rect(center=(rect.centerx, rect.centery + 7)))
+
+        if not node.pruned and node.depth == eff_depth and node.children:
+            more = font_small.render(f"+{len(node.children)} cabang...", True, COLORS["text_dim"])
+            screen.blit(more, (rect.centerx - more.get_width() // 2, rect.bottom + 2))
+
+        for c in _tree_visible_children(node, eff_depth):
+            draw_node(c)
+
+    draw_node(root)
+
+    if eff_depth < vis_depth:
+        note = font_small.render(
+            f"(kedalaman tampil diturunkan otomatis ke {eff_depth} dari {vis_depth} agar tetap terbaca)",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(note, (area.x + TREE_MARGIN_X, area.bottom - 18))
+
+
+class BattleController:
+    """Mesin giliran mode battle:
+    input player -> apply -> cek terminal ->
+    giliran NPC lewat MinimaxAgent -> apply -> cek terminal -> ulang."""
+
+    def __init__(self, game):
+        self.game = game
+        self.state = BattleState.initial()
+        self.agent = MinimaxAgent()
+        self.depth = BATTLE_DEFAULT_DEPTH
+        self.use_alpha_beta = True
+        self.awaiting_player = True
+        self.log = ["Battle dimulai! Pilih aksi: [1] Serang  [2] Bertahan  [3] Potion"]
+        self.result_text = None
+        self.end_deadline = None
+        self.last_npc_action = None
+
+        self.show_tree = False          # toggle visualisasi pohon pencarian (debug)
+        self.tree_vis_depth = 3         # kedalaman pohon yang DIGAMBAR (terpisah dari self.depth)
+
+    def _log(self, text):
+        self.log.append(text)
+        if len(self.log) > BATTLE_LOG_MAX:
+            self.log.pop(0)
+
+    def handle_keydown(self, key):
+        if self.result_text is not None:
+            return  # sedang menampilkan hasil, tunggu auto-kembali ke eksplorasi
+        if not self.awaiting_player:
+            return
+
+        action_map = {
+            pygame.K_1: ACT_ATTACK, pygame.K_KP1: ACT_ATTACK,
+            pygame.K_2: ACT_DEFEND, pygame.K_KP2: ACT_DEFEND,
+            pygame.K_3: ACT_POTION, pygame.K_KP3: ACT_POTION,
+        }
+        action = action_map.get(key)
+        if action is None:
+            return
+        if action == ACT_POTION and self.state.playerPotions <= 0:
+            self._log("Potion habis!")
+            return
+
+        self.player_act(action)
+
+    def player_act(self, action):
+        self.state = self.state.apply_action(action)
+        self._log(f"Player: {action}  (HP {int(max(0, self.state.playerHP))} / Potion {self.state.playerPotions})")
+        self.awaiting_player = False
+
+        if self.state.is_terminal():
+            self._finish()
+            return
+
+        self.npc_act()
+
+    def npc_act(self):
+        action = self.agent.choose_action(
+            self.state, depth=self.depth, use_alpha_beta=self.use_alpha_beta,
+            eval_fn=battle_eval_default,
+        )
+        self.last_npc_action = action
+        self.state = self.state.apply_action(action)
+        self._log(f"NPC   : {action}  (HP {int(max(0, self.state.npcHP))} / Potion {self.state.npcPotions})")
+
+        if self.state.is_terminal():
+            self._finish()
+            return
+
+        self.awaiting_player = True
+
+    def _finish(self):
+        self.awaiting_player = False
+        if self.state.playerHP <= 0:
+            self.result_text = "NPC MENANG -- tank hancur!"
+        else:
+            self.result_text = "PLAYER MENANG -- drone dilumpuhkan!"
+        self._log(self.result_text)
+        self.end_deadline = pygame.time.get_ticks() + BATTLE_END_PAUSE_MS
+
+    def toggle_alpha_beta(self):
+        self.use_alpha_beta = not self.use_alpha_beta
+
+    def change_depth(self, delta):
+        self.depth = max(1, min(6, self.depth + delta))
+
+    def toggle_tree(self):
+        self.show_tree = not self.show_tree
+
+    def change_tree_depth(self, delta):
+        self.tree_vis_depth = max(1, min(self.depth, self.tree_vis_depth + delta))
+
+    def update(self, now_ms):
+        if self.end_deadline is not None and now_ms >= self.end_deadline:
+            self.end_deadline = None
+            self.game.end_battle()
+
+    def draw(self, screen, fonts):
+        if self.show_tree:
+            BattleHUD.draw_tree(screen, fonts, self)
+        else:
+            BattleHUD.draw(screen, fonts, self)
+
+
+class BattleHUD:
+    """Render panel debug overlay (aksi NPC & skornya, node count) + HP bar,
+    terpisah dari HUD mode eksplorasi supaya tanggung jawab tidak campur."""
+
+    @staticmethod
+    def _hp_bar(screen, x, y, w, h, hp, max_hp, color_fg, font):
+        pygame.draw.rect(screen, (22, 21, 16), (x, y, w, h), border_radius=5)
+        ratio = max(0.0, min(1.0, hp / max_hp))
+        fill_w = int((w - 4) * ratio)
+        if fill_w > 0:
+            pygame.draw.rect(screen, color_fg, (x + 2, y + 2, fill_w, h - 4), border_radius=4)
+        pygame.draw.rect(screen, COLORS["panel_border"], (x, y, w, h), width=1, border_radius=5)
+        txt = font.render(f"{max(0, int(hp))} / {int(max_hp)}", True, COLORS["text_cream"])
+        screen.blit(txt, txt.get_rect(center=(x + w // 2, y + h // 2)))
+
+    @staticmethod
+    def draw(screen, fonts, controller):
+        font_ui_bold = fonts["ui_bold"]
+        font_small = fonts["small"]
+        font_title = fonts["title"]
+
+        area = pygame.Rect(BOARD_X, BOARD_Y, BOARD_W + 24 + PANEL_W, BOARD_H)
+        pygame.draw.rect(screen, COLORS["panel"], area, border_radius=12)
+        pygame.draw.rect(screen, COLORS["panel_border"], area, width=1, border_radius=12)
+
+        title = font_title.render("MODE BATTLE -- Minimax / Alpha-Beta", True, COLORS["text_cream"])
+        screen.blit(title, (area.x + 20, area.y + 16))
+
+        state = controller.state
+        left_x = area.x + 20
+        right_x = area.x + area.w // 2 + 20
+        bars_y = area.y + 60
+
+        lbl_p = font_ui_bold.render("TANK (Player)", True, COLORS["tank"])
+        screen.blit(lbl_p, (left_x, bars_y))
+        BattleHUD._hp_bar(screen, left_x, bars_y + 20, 260, 26, state.playerHP, BATTLE_MAX_HP, COLORS["tank"], font_small)
+        pot_p = font_small.render(
+            f"Potion: {state.playerPotions}  {'| BERTAHAN' if state.playerDefending else ''}",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(pot_p, (left_x, bars_y + 52))
+
+        lbl_n = font_ui_bold.render("DRONE (NPC)", True, COLORS["drone"])
+        screen.blit(lbl_n, (right_x, bars_y))
+        BattleHUD._hp_bar(screen, right_x, bars_y + 20, 260, 26, state.npcHP, BATTLE_MAX_HP, COLORS["drone"], font_small)
+        pot_n = font_small.render(
+            f"Potion: {state.npcPotions}  {'| BERTAHAN' if state.npcDefending else ''}",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(pot_n, (right_x, bars_y + 52))
+
+        instr_y = bars_y + 90
+        if controller.result_text:
+            txt = font_ui_bold.render(controller.result_text, True, COLORS["accent"])
+        elif controller.awaiting_player:
+            txt = font_ui_bold.render("Giliranmu -- [1] Serang  [2] Bertahan  [3] Potion", True, COLORS["text_cream"])
+        else:
+            txt = font_ui_bold.render("Drone berpikir...", True, COLORS["text_dim"])
+        screen.blit(txt, (left_x, instr_y))
+
+        log_y = instr_y + 30
+        for line in controller.log[-BATTLE_LOG_MAX:]:
+            t = font_small.render(line, True, COLORS["text_cream"])
+            screen.blit(t, (left_x, log_y))
+            log_y += 16
+
+        dbg_x = right_x
+        dbg_y = instr_y
+        dbg_hdr = font_ui_bold.render(
+            f"[Debug NPC] {'alpha-beta' if controller.use_alpha_beta else 'minimax'}  depth={controller.depth}",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(dbg_hdr, (dbg_x, dbg_y))
+        dbg_y += 20
+        if controller.agent.root_action_scores:
+            for action, score in controller.agent.root_action_scores:
+                picked = action == controller.last_npc_action
+                color = COLORS["accent_hover"] if picked else COLORS["text_cream"]
+                marker = " <- dipilih" if picked else ""
+                line = f"{action:<8}: skor {score:7.1f}{marker}"
+                t = font_small.render(line, True, color)
+                screen.blit(t, (dbg_x, dbg_y))
+                dbg_y += 16
+            dbg_y += 4
+            node_txt = font_small.render(f"Node diekspansi: {controller.agent.nodes_expanded}", True, COLORS["text_dim"])
+            screen.blit(node_txt, (dbg_x, dbg_y))
+        else:
+            t = font_small.render("(belum ada keputusan NPC)", True, COLORS["text_dim"])
+            screen.blit(t, (dbg_x, dbg_y))
+
+        ctrl_y = area.bottom - 34
+        ctrl_txt = font_small.render(
+            "[B] toggle alpha-beta   [,] / [.] ubah depth (1-6)   [T] lihat pohon pencarian",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(ctrl_txt, (left_x, ctrl_y))
+
+    @staticmethod
+    def draw_tree(screen, fonts, controller):
+        """Overlay visualisasi pohon pencarian minimax/alpha-beta milik
+        keputusan NPC yang terakhir diambil -- alat bantu debug."""
+        font_title = fonts["title"]
+        font_ui_bold = fonts["ui_bold"]
+        font_small = fonts["small"]
+
+        area = pygame.Rect(BOARD_X, BOARD_Y, BOARD_W + 24 + PANEL_W, BOARD_H)
+        pygame.draw.rect(screen, COLORS["panel"], area, border_radius=12)
+        pygame.draw.rect(screen, COLORS["panel_border"], area, width=1, border_radius=12)
+
+        title = font_title.render("Pohon Pencarian NPC (Debug)", True, COLORS["text_cream"])
+        screen.blit(title, (area.x + 20, area.y + 12))
+
+        algo_label = "Alpha-Beta Pruning" if controller.use_alpha_beta else "Minimax murni"
+        info = font_ui_bold.render(
+            f"{algo_label}  |  depth pencarian={controller.depth}  |  tampil s.d. depth={controller.tree_vis_depth}  |  "
+            f"node diekspansi={controller.agent.nodes_expanded}",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(info, (area.x + 20, area.y + 34))
+
+        legend_y = area.y + 34
+        legend_x = area.right - 300
+        for label, color in (("MAX (NPC)", COLORS["drone"]), ("MIN (Player)", COLORS["tank"]), ("dipangkas", (110, 70, 62))):
+            pygame.draw.rect(screen, color, (legend_x, legend_y + 3, 10, 10), border_radius=2)
+            t = font_small.render(label, True, COLORS["text_dim"])
+            screen.blit(t, (legend_x + 16, legend_y))
+            legend_x += 16 + t.get_width() + 14
+
+        tree_area = pygame.Rect(area.x, area.y + 58, area.w, area.h - 58 - 26)
+        draw_search_tree(screen, fonts, controller.agent.last_tree, controller.tree_vis_depth, tree_area)
+
+        ctrl_txt = font_small.render(
+            "[T] kembali ke HUD battle   [ [ ] ubah kedalaman tampil   [1/2/3] tetap bisa dipakai untuk beraksi",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(ctrl_txt, (area.x + 20, area.bottom - 20))
+
+
+# =============================================================================
 # BAGIAN 6 -- KELAS GAME UTAMA
 # =============================================================================
 class Game:
@@ -584,11 +1253,20 @@ class Game:
         self.font_sub = pygame.font.SysFont("segoeui,arial,sans-serif", 12)
         self.font_cost = pygame.font.SysFont("arial", 10, bold=True)
         self.font_legend = pygame.font.SysFont("segoeui,arial,sans-serif", 11)
+        self.fonts = {
+            "small": self.font_small,
+            "ui": self.font_ui,
+            "ui_bold": self.font_ui_bold,
+            "title": self.font_title,
+        }
 
         self.algo = "astar"          # 'ucs' | 'astar'
         self.heuristic = "manhattan"  # 'manhattan' | 'euclidean' | 'chebyshev'
         self.vision_radius = 4
         self.auto_chase = False
+
+        self.mode = "explore"        # 'explore' | 'battle'
+        self.battle_controller = None
 
         self.stats_lines = ["Belum ada pencarian dijalankan."]
         self.status_text = "Drone melakukan pemindaian awal untuk menemukan posisi awal tank..."
@@ -738,6 +1416,45 @@ class Game:
         )
 
     # ------------------------------------------------------------------
+    # MODE BATTLE
+    # ------------------------------------------------------------------
+    def check_battle_trigger(self):
+        """Cek jarak tank<->drone setiap giliran; kalau <= ambang, masuk battle mode."""
+        if self.mode != "explore" or self.game_over or self.intro_phase:
+            return False
+        dist = abs(self.drone[0] - self.tank[0]) + abs(self.drone[1] - self.tank[1])
+        if dist <= BATTLE_TRIGGER_DISTANCE:
+            self.start_battle()
+            return True
+        return False
+
+    def start_battle(self):
+        self.mode = "battle"
+        self.auto_chase = False
+        self.auto_next_tick = None
+        self.intro_phase = None
+        self.last_path = []
+        self.battle_controller = BattleController(self)
+        self.status_text = "Drone cukup dekat -- battle dimulai!"
+        self.status_caught = False
+        self.drone_state_text = "BATTLE -- adversarial search (Minimax/Alpha-Beta)"
+
+    def end_battle(self):
+        """Battle selesai (menang/kalah) -> balik ke mode eksplorasi dengan
+        posisi tank/drone direset agak menjauh supaya tidak langsung battle lagi."""
+        self.mode = "explore"
+        self.battle_controller = None
+        self.initial_drone_pos, self.initial_tank_pos = pick_random_start_positions()
+        self.tank = self.initial_tank_pos
+        self.drone = self.initial_drone_pos
+        self.tank_dir = (0, -1)
+        self.grid = generate_map(self.drone, self.tank)
+        self.last_path = []
+        self.game_over = False
+        self.reset_drone_knowledge()
+        self.start_intro_sequence()
+
+    # ------------------------------------------------------------------
     # SEKUENS PEMINDAIAN AWAL
     # ------------------------------------------------------------------
     def reset_drone_knowledge(self):
@@ -822,14 +1539,7 @@ class Game:
         self.intro_phase = None
         self.last_path = []
 
-        if not self.game_over and self.drone == self.tank:
-            self.game_over = True
-            self.drone_state = "chasing"
-            self.drone_state_text = "TERTANGKAP -- tank masih di posisi awal"
-            self.status_text = "Tank belum sempat berpindah dari posisi awal -- drone langsung menangkapnya!"
-            self.status_caught = True
-            self.auto_chase = False
-            self.auto_next_tick = None
+        if not self.game_over and self.check_battle_trigger():
             return
 
         self.last_known_pos = None
@@ -843,7 +1553,7 @@ class Game:
     # GILIRAN TANK -> DRONE
     # ------------------------------------------------------------------
     def try_move_tank(self, dr, dc):
-        if self.game_over or self.intro_phase == "scanning":
+        if self.game_over or self.intro_phase == "scanning" or self.mode == "battle":
             return
         nr, nc = self.tank[0] + dr, self.tank[1] + dc
         if not (0 <= nr < ROWS and 0 <= nc < COLS):
@@ -854,6 +1564,7 @@ class Game:
         self.tank_dir = (dr, dc)
 
         if self.intro_phase == "moving":
+            self.check_battle_trigger()
             return  # drone mengabaikan pergerakan tank selama fase ini
 
         self.drone_turn()
@@ -881,7 +1592,10 @@ class Game:
         return SearchResult([], math.inf, 0, [], 0.0, False)
 
     def drone_turn(self):
-        if self.game_over or self.intro_phase:
+        if self.game_over or self.intro_phase or self.mode != "explore":
+            return
+
+        if self.check_battle_trigger():
             return
 
         detected = can_detect_tank(self.grid, self.drone, self.tank, self.vision_radius)
@@ -927,13 +1641,8 @@ class Game:
             self.drone = result.path[1]
         self.visited_cells.add(self.drone)
 
-        if self.drone == self.tank:
-            self.game_over = True
-            self.last_known_pos = None
-            self.status_text = 'Drone berhasil menemukan posisi tank! Tekan "Reset Posisi" untuk main lagi.'
-            self.status_caught = True
-            self.auto_chase = False
-            self.auto_next_tick = None
+        if self.check_battle_trigger():
+            return
         elif detected:
             self.status_text = "Tank terdeteksi! Drone mengejar dan terus menghitung ulang jalurnya..."
             self.status_caught = False
@@ -959,6 +1668,10 @@ class Game:
     # UPDATE PER FRAME (mengganti setInterval/setTimeout JS)
     # ------------------------------------------------------------------
     def update(self, now_ms):
+        if self.mode == "battle":
+            self.battle_controller.update(now_ms)
+            return
+
         if self.intro_phase == "scanning" and self.scan_next_tick is not None and now_ms >= self.scan_next_tick:
             self.scan_revealed_count = min(len(self.scan_expanded_order), self.scan_revealed_count + SCAN_REVEAL_PER_TICK)
             if self.scan_revealed_count >= len(self.scan_expanded_order):
@@ -982,6 +1695,23 @@ class Game:
     # EVENT
     # ------------------------------------------------------------------
     def handle_keydown(self, key):
+        if self.mode == "battle":
+            if key == pygame.K_b:
+                self.battle_controller.toggle_alpha_beta()
+            elif key == pygame.K_COMMA:
+                self.battle_controller.change_depth(-1)
+            elif key == pygame.K_PERIOD:
+                self.battle_controller.change_depth(1)
+            elif key == pygame.K_t:
+                self.battle_controller.toggle_tree()
+            elif key == pygame.K_LEFTBRACKET:
+                self.battle_controller.change_tree_depth(-1)
+            elif key == pygame.K_RIGHTBRACKET:
+                self.battle_controller.change_tree_depth(1)
+            else:
+                self.battle_controller.handle_keydown(key)
+            return
+
         mapping = {
             pygame.K_UP: (-1, 0), pygame.K_w: (-1, 0),
             pygame.K_DOWN: (1, 0), pygame.K_s: (1, 0),
@@ -993,6 +1723,8 @@ class Game:
             self.try_move_tank(dr, dc)
 
     def handle_click(self, pos):
+        if self.mode == "battle":
+            return
         buttons = [
             self.btn_algo_ucs, self.btn_algo_astar,
             self.btn_heur_manhattan, self.btn_heur_euclidean, self.btn_heur_chebyshev,
@@ -1012,13 +1744,16 @@ class Game:
         screen = self.screen
         screen.fill(COLORS["bg_deep"])
 
-        title = self.font_title.render("Tank vs Drone -- UCS vs A* Simulasi Ukraina", True, COLORS["text_cream"])
+        title = self.font_title.render("Tank vs Drone -- UCS/A* + Battle Minimax -- Simulasi Ukraina", True, COLORS["text_cream"])
         screen.blit(title, (BOARD_X, 18))
 
-        self.draw_board()
-        self.draw_legend()
-        self.draw_status()
-        self.draw_panel()
+        if self.mode == "battle":
+            self.battle_controller.draw(screen, self.fonts)
+        else:
+            self.draw_board()
+            self.draw_legend()
+            self.draw_status()
+            self.draw_panel()
 
         pygame.display.flip()
 
@@ -1350,7 +2085,7 @@ class Game:
 # =============================================================================
 def main():
     pygame.init()
-    pygame.display.set_caption("Tank vs Drone -- UCS vs A* Simulasi Ukraina")
+    pygame.display.set_caption("Tank vs Drone -- UCS/A* + Battle Minimax -- Simulasi Ukraina")
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
     clock = pygame.time.Clock()
 
