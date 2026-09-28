@@ -39,7 +39,6 @@ import math
 import random
 import sys
 import time
-
 import pygame
 
 # =============================================================================
@@ -1370,6 +1369,12 @@ class BattleController:
         self.experiment_rows = []   # [(label, res_tuple_or_None), ...]
         self.experiment_note = ""
 
+        # Papan skor ulangan: tetap ada selama sesi battle ini (tidak direset
+        # oleh restart_battle), hanya hilang kalau kembali ke eksplorasi.
+        self.round_no = 1
+        self.player_wins = 0
+        self.npc_wins = 0
+
         self._build_buttons()
 
     # ------------------------------------------------------------------
@@ -1401,11 +1406,24 @@ class BattleController:
         # dan digantikan tombol ini. enabled=False supaya tidak bisa diklik
         # sebelum pertempuran berakhir.
         self.btn_return = Button(
-            (self.left_x, act_y, self.left_w, act_h),
+            (self.left_x, act_y + act_h + 8, self.left_w, act_h),
             "Kembali ke Mode Eksplorasi",
             self.on_return_to_explore,
+            enabled=False,
+        )
+        # Tombol ulang setelah battle selesai (slot paling atas, menonjol).
+        self.btn_rematch = Button(
+            (self.left_x, act_y, self.left_w, act_h),
+            "Ulangi Pertarungan",
+            self.restart_battle,
             primary=True,
             enabled=False,
+        )
+        # Tombol kecil yang selalu tersedia, juga di tengah battle.
+        self.btn_restart_small = Button(
+            (self.left_x + self.left_w - 110, self.btn_repair.rect.bottom + 14, 110, 22),
+            "Mulai Ulang",
+            self.restart_battle,
         )
 
         # ---- Panel kontrol kanan: algoritma / eval / urutan / depth / view ----
@@ -1460,7 +1478,7 @@ class BattleController:
 
     def all_buttons(self):
         return (
-            self.player_buttons + [self.btn_return] +
+            self.player_buttons + [self.btn_rematch, self.btn_return, self.btn_restart_small] +
             self.row_mode + self.row_eval + self.row_order +
             self.row_depth + self.row_tree_depth + self.row_view + [self.btn_experiment]
         )
@@ -1537,14 +1555,32 @@ class BattleController:
         self.awaiting_player = False
         if self.state.playerHP <= 0:
             self.result_text = "NPC MENANG -- tank hancur!"
+            self.npc_wins += 1
         else:
             self.result_text = "PLAYER MENANG -- drone dilumpuhkan!"
+            self.player_wins += 1
         self._log(self.result_text)
 
     def update(self, now_ms):
         """Tidak ada lagi timer otomatis di mode battle. Method ini
         dipertahankan (kosong) karena Game.update() masih memanggilnya."""
         pass
+
+    def restart_battle(self):
+        """Ulangi pertarungan dari awal (HP & kit reparasi penuh, giliran
+        player) TANPA keluar dari mode battle. Pengaturan algoritma, fungsi
+        evaluasi, urutan aksi, kedalaman, dan tampilan tetap dipertahankan.
+        Peta, posisi tank, dan drone di mode eksplorasi tidak disentuh."""
+        self.round_no += 1
+        self.state = BattleState.initial()
+        self.agent = MinimaxAgent()   # bersihkan skor debug & pohon lama
+        self.awaiting_player = True
+        self.result_text = None
+        self.end_deadline = None
+        self.last_npc_action = None
+        self.experiment_rows = []
+        self.experiment_note = ""
+        self.log = [f"Ronde {self.round_no} dimulai! Pilih aksi lewat tombol di bawah."]
 
     def on_return_to_explore(self):
         """Dipanggil saat tombol konfirmasi diklik. Baru di sini Game
@@ -1710,6 +1746,12 @@ class BattleHUD:
             txt = font_ui_bold.render("Drone berpikir...", True, COLORS["text_dim"])
         screen.blit(txt, (left_x, turn_y))
 
+        score = font_small.render(
+            f"Ronde {controller.round_no}   |   Tank menang: {controller.player_wins}   Drone menang: {controller.npc_wins}",
+            True, COLORS["text_dim"],
+        )
+        screen.blit(score, (left_x, turn_y + 22))
+
         # ---- Tombol aksi player ATAU tombol konfirmasi ----
         battle_over = controller.result_text is not None
 
@@ -1718,10 +1760,15 @@ class BattleHUD:
             # supaya tidak bisa terklik), diganti tombol konfirmasi.
             for btn in controller.player_buttons:
                 btn.enabled = False
+            controller.btn_rematch.enabled = True
             controller.btn_return.enabled = True
+            controller.btn_restart_small.enabled = False
+            controller.btn_rematch.draw(screen, font_ui_bold)
             controller.btn_return.draw(screen, font_ui_bold)
         else:
+            controller.btn_rematch.enabled = False
             controller.btn_return.enabled = False
+            controller.btn_restart_small.enabled = False
             can_act = controller.awaiting_player
             controller.btn_attack.enabled = can_act
             controller.btn_defend.enabled = can_act
@@ -1729,6 +1776,10 @@ class BattleHUD:
             for btn in controller.player_buttons:
                 btn.primary = False
                 btn.draw(screen, font_ui_bold)
+
+        if not battle_over:
+            controller.btn_restart_small.enabled = True
+            controller.btn_restart_small.draw(screen, font_small)
 
         log_y = controller.btn_repair.rect.bottom + 16
         log_hdr = font_ui_bold.render("Log Pertarungan", True, COLORS["text_dim"])
