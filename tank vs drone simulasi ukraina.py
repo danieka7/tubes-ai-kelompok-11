@@ -518,6 +518,54 @@ SCREEN_H = max(STATUS_Y + 60, PANEL_Y + 760)
 # pohon pencarian / tabel eksperimen di kanan).
 BATTLE_AREA_MARGIN = 20
 
+# Ukuran desain awal dipakai sebagai batas minimum jendela, supaya UI
+# tidak pernah lebih sempit dari yang dirancang (kalau lebih sempit,
+# tombol dan teks akan bertumpuk).
+MIN_SCREEN_W = SCREEN_W
+MIN_SCREEN_H = SCREEN_H
+BASE_CELL = 30          # ukuran petak minimum (= nilai CELL awal)
+PANEL_MIN_W = 320       # lebar panel kanan minimum
+LEGEND_BLOCK_H = 190    # tinggi ruang legenda di bawah papan
+STATUS_BLOCK_H = 60     # tinggi ruang kotak status di bawah legenda
+
+
+def apply_layout(win_w, win_h):
+    """Hitung ulang semua konstanta tata letak mode eksplorasi
+    berdasarkan ukuran jendela (win_w x win_h).
+
+    Aturannya:
+      - Papan dibesarkan dengan menaikkan CELL, dibatasi oleh tinggi DAN
+        lebar jendela (dipilih yang lebih kecil) supaya tidak ada yang
+        keluar layar.
+      - Sisa lebar diberikan ke panel kanan, jadi panel ikut melebar.
+    """
+    # Variabel-variabel ini global karena dibaca oleh banyak fungsi gambar.
+    global CELL, BOARD_W, BOARD_H, PANEL_X, PANEL_W
+    global LEGEND_Y, STATUS_Y, SCREEN_W, SCREEN_H
+
+    # Jendela tidak boleh lebih kecil dari ukuran desain awal.
+    SCREEN_W = max(MIN_SCREEN_W, win_w)
+    SCREEN_H = max(MIN_SCREEN_H, win_h)
+
+    # Petak terbesar yang masih muat secara vertikal
+    # (papan + legenda + status harus muat di tinggi jendela).
+    cell_by_h = (SCREEN_H - BOARD_Y - 12 - LEGEND_BLOCK_H - STATUS_BLOCK_H) // ROWS
+    # Petak terbesar yang masih muat secara horizontal
+    # (papan + jarak 24 + panel minimum + margin kanan 20).
+    cell_by_w = (SCREEN_W - BOARD_X - 24 - PANEL_MIN_W - 20) // COLS
+
+    # Ambil yang lebih kecil, tetapi tidak boleh di bawah ukuran dasar.
+    CELL = max(BASE_CELL, min(cell_by_h, cell_by_w))
+
+    BOARD_W, BOARD_H = COLS * CELL, ROWS * CELL
+
+    # Panel menempati seluruh sisa lebar di kanan papan.
+    PANEL_X = BOARD_X + BOARD_W + 24
+    PANEL_W = SCREEN_W - PANEL_X - 20
+
+    LEGEND_Y = BOARD_Y + BOARD_H + 12
+    STATUS_Y = LEGEND_Y + LEGEND_BLOCK_H
+
 
 def lerp_color(c_near, c_far, t):
     t = max(0.0, min(1.0, t))
@@ -1289,6 +1337,17 @@ class BattleController:
         self.btn_repair = Button((self.left_x, act_y + 2 * (act_h + 8), self.left_w, act_h),
                                   "[Reparasi]", lambda: self.on_player_action(ACT_REPAIR))
         self.player_buttons = [self.btn_attack, self.btn_defend, self.btn_repair]
+        # Tombol konfirmasi kembali ke mode eksplorasi. Posisinya sama dengan
+        # tombol [Serang] karena saat battle selesai, tombol aksi disembunyikan
+        # dan digantikan tombol ini. enabled=False supaya tidak bisa diklik
+        # sebelum pertempuran berakhir.
+        self.btn_return = Button(
+            (self.left_x, act_y, self.left_w, act_h),
+            "Kembali ke Mode Eksplorasi",
+            self.on_return_to_explore,
+            primary=True,
+            enabled=False,
+        )
 
         # ---- Panel kontrol kanan: algoritma / eval / urutan / depth / view ----
         # Tiap baris tombol diberi ROW_GROUP_GAP ekstra setelahnya supaya
@@ -1342,7 +1401,8 @@ class BattleController:
 
     def all_buttons(self):
         return (
-            self.player_buttons + self.row_mode + self.row_eval + self.row_order +
+            self.player_buttons + [self.btn_return] +
+            self.row_mode + self.row_eval + self.row_order +
             self.row_depth + self.row_tree_depth + self.row_view + [self.btn_experiment]
         )
 
@@ -1412,17 +1472,25 @@ class BattleController:
         self.awaiting_player = True
 
     def _finish(self):
+        """Battle berakhir. Hanya menyimpan hasil dan menampilkan tombol
+        konfirmasi. TIDAK lagi memanggil end_battle() otomatis; pemain
+        sendiri yang memutuskan kapan kembali ke mode eksplorasi."""
         self.awaiting_player = False
         if self.state.playerHP <= 0:
             self.result_text = "NPC MENANG -- tank hancur!"
         else:
             self.result_text = "PLAYER MENANG -- drone dilumpuhkan!"
         self._log(self.result_text)
-        self.end_deadline = pygame.time.get_ticks() + BATTLE_END_PAUSE_MS
 
     def update(self, now_ms):
-        if self.end_deadline is not None and now_ms >= self.end_deadline:
-            self.end_deadline = None
+        """Tidak ada lagi timer otomatis di mode battle. Method ini
+        dipertahankan (kosong) karena Game.update() masih memanggilnya."""
+        pass
+
+    def on_return_to_explore(self):
+        """Dipanggil saat tombol konfirmasi diklik. Baru di sini Game
+        diminta kembali ke mode eksplorasi."""
+        if self.result_text is not None:
             self.game.end_battle()
 
     def handle_click(self, pos):
@@ -1583,14 +1651,25 @@ class BattleHUD:
             txt = font_ui_bold.render("Drone berpikir...", True, COLORS["text_dim"])
         screen.blit(txt, (left_x, turn_y))
 
-        # ---- Tombol aksi player ----
-        can_act = controller.result_text is None and controller.awaiting_player
-        controller.btn_attack.enabled = can_act
-        controller.btn_defend.enabled = can_act
-        controller.btn_repair.enabled = can_act and state.playerRepairKits > 0
-        for btn in controller.player_buttons:
-            btn.primary = False
-            btn.draw(screen, font_ui_bold)
+        # ---- Tombol aksi player ATAU tombol konfirmasi ----
+        battle_over = controller.result_text is not None
+
+        if battle_over:
+            # Pertempuran selesai: tombol aksi disembunyikan (juga dinonaktifkan
+            # supaya tidak bisa terklik), diganti tombol konfirmasi.
+            for btn in controller.player_buttons:
+                btn.enabled = False
+            controller.btn_return.enabled = True
+            controller.btn_return.draw(screen, font_ui_bold)
+        else:
+            controller.btn_return.enabled = False
+            can_act = controller.awaiting_player
+            controller.btn_attack.enabled = can_act
+            controller.btn_defend.enabled = can_act
+            controller.btn_repair.enabled = can_act and state.playerRepairKits > 0
+            for btn in controller.player_buttons:
+                btn.primary = False
+                btn.draw(screen, font_ui_bold)
 
         log_y = controller.btn_repair.rect.bottom + 16
         log_hdr = font_ui_bold.render("Log Pertarungan", True, COLORS["text_dim"])
@@ -1848,6 +1927,24 @@ class Game:
 
         self.panel_x = x
         self.panel_w = w
+
+    def on_resize(self, win_w, win_h):
+        """Dipanggil setiap jendela berubah ukuran. Menghitung ulang tata
+        letak, lalu membangun ulang tombol supaya posisinya mengikuti."""
+        apply_layout(win_w, win_h)
+
+        # Surface layar sudah diganti oleh pygame saat jendela di-resize,
+        # jadi ambil referensi terbaru.
+        self.screen = pygame.display.get_surface()
+
+        # Tombol panel eksplorasi dibuat dari PANEL_X / PANEL_W, jadi
+        # harus dibangun ulang. State game (auto_chase, algoritma, dll.)
+        # disimpan di atribut Game, bukan di tombol, sehingga tidak hilang.
+        self._build_ui()
+
+        # Kalau sedang di mode Battle, tombolnya juga disusun ulang.
+        if self.battle_controller is not None:
+            self.battle_controller._build_buttons()
 
     def set_algo(self, algo):
         self.algo = algo
@@ -2573,7 +2670,10 @@ class Game:
 def main():
     pygame.init()
     pygame.display.set_caption("Tank vs Drone -- UCS/A* + Battle Minimax -- Simulasi Ukraina")
-    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+
+    # RESIZABLE: jendela boleh ditarik / di-maximize. Ukuran layar
+    # sebenarnya ikut berubah, bukan sekadar gambar yang diperbesar.
+    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.RESIZABLE)
     clock = pygame.time.Clock()
 
     game = Game(screen)
@@ -2584,11 +2684,27 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+
+            elif event.type == pygame.VIDEORESIZE:
+                # Jendela ditarik / di-maximize / fullscreen.
+                # Kalau ditarik lebih kecil dari minimum, paksa kembali.
+                if event.w < MIN_SCREEN_W or event.h < MIN_SCREEN_H:
+                    pygame.display.set_mode(
+                        (max(MIN_SCREEN_W, event.w), max(MIN_SCREEN_H, event.h)),
+                        pygame.RESIZABLE,
+                    )
+                # Hitung ulang tata letak untuk kedua mode (eksplorasi & battle).
+                w, h = pygame.display.get_surface().get_size()
+                game.on_resize(w, h)
+
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.key == pygame.K_F11:
+                    pygame.display.toggle_fullscreen()  # memicu VIDEORESIZE juga
                 else:
                     game.handle_keydown(event.key)
+
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 game.handle_click(event.pos)
 
