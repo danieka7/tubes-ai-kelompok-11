@@ -1,40 +1,3 @@
-"""
-Tank vs Drone -- UCS vs A* Pathfinding (versi Pygame)
-======================================================
-Port dari simulasi HTML/JS asli. Logika medan, biaya tempuh, algoritma
-pencarian (UCS / A*), fog-of-war (radius pandang + line-of-sight),
-pola pencarian boustrophedon, dan sekuens pemindaian awal (scanning ->
-moving -> searching/chasing/investigating) diusahakan sama persis
-dengan versi web-nya. Bagian visual disederhanakan supaya cocok
-digambar dengan primitif Pygame (rect/circle/line), bukan re-implementasi
-1:1 dari canvas API.
-
-Mode Battle (Minimax/Alpha-Beta): begitu drone cukup dekat dengan tank,
-permainan berpindah dari mode eksplorasi (UCS/A* di grid) ke mode battle
--- sebuah sub-sistem terpisah dengan state sederhana (HP, kit reparasi,
-status bertahan) yang dikendalikan lewat adversarial search (Minimax /
-Alpha-Beta pruning), bukan lagi pathfinding. Tank & drone adalah mesin,
-jadi pemulihan HP direpresentasikan sebagai "reparasi" (self-repair),
-bukan minum potion ala karakter manusia.
-
-Kontrol:
-  - Panah / WASD           : gerakkan tank (mode eksplorasi)
-  - Klik tombol di panel kanan : ganti algoritma / heuristik / radius
-                                  pandang, acak medan, reset posisi,
-                                  toggle auto-chase, jalankan eksperimen
-  - Mode Battle (SEMUA lewat tombol klik, tidak ada toggle keyboard):
-      * Tombol [Serang] / [Bertahan] / [Reparasi]     -> aksi player
-      * Tombol Minimax / Alpha-Beta / Expectimax      -> algoritma NPC
-      * Tombol Seimbang / Agresif / Defensif / Hemat  -> fungsi evaluasi NPC
-      * Tombol urutan aksi (Serang/Bertahan/Reparasi dulu) -> move ordering
-      * Tombol 1-6                                     -> kedalaman pencarian
-      * Tombol 1-6                                     -> kedalaman pohon digambar
-      * Tombol Pohon Pencarian / Tabel Eksperimen       -> tampilan panel kanan
-      * Tombol "Jalankan Eksperimen"                    -> jalankan semua
-        perbandingan (algoritma, eval, urutan aksi, kedalaman) sekaligus
-      * Arahkan mouse ke node pohon -> tooltip debug detail node tsb
-"""
-
 import math
 import random
 import sys
@@ -447,13 +410,13 @@ def find_nearest_search_index(pattern, pos):
 # BAGIAN 4 -- WARNA & KONSTANTA TAMPILAN
 # =============================================================================
 COLORS = {
-    "bg_deep": (27, 26, 21),
-    "panel": (35, 32, 25),
-    "panel_border": (58, 52, 39),
-    "text_cream": (232, 225, 207),
-    "text_dim": (167, 158, 136),
-    "accent": (224, 134, 43),
-    "accent_hover": (240, 160, 75),
+    "bg_deep": (26, 36, 22),
+    "panel": (36, 50, 30),
+    "panel_border": (84, 104, 66),
+    "text_cream": (220, 234, 196),
+    "text_dim": (160, 182, 128),
+    "accent": (163, 199, 98),
+    "accent_hover": (200, 230, 140),
 
     "dirt": (138, 122, 84),
     "dirt_alt": (127, 111, 75),
@@ -605,13 +568,13 @@ class Button:
 
     def draw(self, screen, font):
         if not self.enabled:
-            bg = (43, 39, 32)
+            bg = (50, 68, 42)
             fg = COLORS["text_dim"]
         elif self.primary:
             bg = COLORS["accent"]
-            fg = (27, 26, 21)
+            fg = (24, 34, 20)
         else:
-            bg = (43, 39, 32)
+            bg = (50, 68, 42)
             fg = COLORS["text_cream"]
         pygame.draw.rect(screen, bg, self.rect, border_radius=7)
         pygame.draw.rect(screen, COLORS["panel_border"], self.rect, width=1, border_radius=7)
@@ -1195,7 +1158,7 @@ def _draw_node_tooltip(screen, fonts, node, mouse_pos):
     x = min(x, screen.get_width() - w - 4)
     y = min(y, screen.get_height() - h - 4)
     box = pygame.Rect(x, y, w, h)
-    pygame.draw.rect(screen, (18, 17, 14), box, border_radius=6)
+    pygame.draw.rect(screen, (16, 24, 13), box, border_radius=6)
     pygame.draw.rect(screen, COLORS["accent"], box, width=1, border_radius=6)
     for i, (text, color) in enumerate(lines):
         t = font.render(text, True, color)
@@ -1235,7 +1198,7 @@ def draw_search_tree(screen, fonts, root, vis_depth, area, mouse_pos=None):
 
     def draw_edges(node):
         for c in _tree_visible_children(node, eff_depth):
-            col = (76, 70, 58) if not c.pruned else (58, 50, 46)
+            col = (80, 100, 64) if not c.pruned else (66, 58, 52)
             pygame.draw.line(
                 screen, col,
                 (node.x, node.y + node_h / 2), (c.x, c.y - node_h / 2),
@@ -1253,13 +1216,13 @@ def draw_search_tree(screen, fonts, root, vis_depth, area, mouse_pos=None):
             hover_node[0] = node
 
         if node.pruned:
-            bg, border = (40, 38, 33), (110, 70, 62)
+            bg, border = (38, 44, 34), (110, 70, 62)
         elif node.owner == "MAX":
             bg, border = (46, 39, 30), COLORS["drone"]
         elif node.owner == "CHANCE":
             bg, border = (42, 34, 46), (150, 110, 200)
         else:
-            bg, border = (33, 39, 29), COLORS["tank"]
+            bg, border = (32, 52, 30), COLORS["tank"]
         pygame.draw.rect(screen, bg, rect, border_radius=6)
         width = (3 if is_hover else 2) if node.kind == "terminal" else (2 if is_hover else 1)
         pygame.draw.rect(screen, (COLORS["accent_hover"] if is_hover else border), rect, width=width, border_radius=6)
@@ -1671,7 +1634,7 @@ class BattleHUD:
 
     @staticmethod
     def _hp_bar(screen, x, y, w, h, hp, max_hp, color_fg, font):
-        pygame.draw.rect(screen, (22, 21, 16), (x, y, w, h), border_radius=5)
+        pygame.draw.rect(screen, (20, 29, 17), (x, y, w, h), border_radius=5)
         ratio = max(0.0, min(1.0, hp / max_hp))
         fill_w = int((w - 4) * ratio)
         if fill_w > 0:
@@ -1823,7 +1786,7 @@ class BattleHUD:
         # ---- Panel debug: skor aksi root & node count ----
         dbg_y = controller.debug_y
         dbg_box = pygame.Rect(rx, dbg_y, rw, controller.debug_h)
-        pygame.draw.rect(screen, (22, 21, 16), dbg_box, border_radius=6)
+        pygame.draw.rect(screen, (20, 29, 17), dbg_box, border_radius=6)
         pygame.draw.rect(screen, COLORS["panel_border"], dbg_box, width=1, border_radius=6)
         ty = dbg_y + 6
         hdr = font_ui_bold.render(
@@ -2685,7 +2648,7 @@ class Game:
         screen = self.screen
         rect = pygame.Rect(BOARD_X, STATUS_Y, BOARD_W, 34)
         color = COLORS["danger"] if self.status_caught else COLORS["panel_border"]
-        pygame.draw.rect(screen, (22, 21, 16), rect, border_radius=7)
+        pygame.draw.rect(screen, (20, 29, 17), rect, border_radius=7)
         pygame.draw.rect(screen, color, rect, width=1, border_radius=7)
         text_color = COLORS["danger"] if self.status_caught else COLORS["text_dim"]
         lines = wrap_text(self.status_text, self.font_ui, BOARD_W - 20)
@@ -2730,7 +2693,7 @@ class Game:
         lbl = self.font_ui.render("Status drone saat ini", True, COLORS["text_cream"])
         screen.blit(lbl, (x, state_y))
         state_box = pygame.Rect(x, state_y + 18, self.panel_w, 36)
-        pygame.draw.rect(screen, (22, 21, 16), state_box, border_radius=6)
+        pygame.draw.rect(screen, (20, 29, 17), state_box, border_radius=6)
         pygame.draw.rect(screen, COLORS["panel_border"], state_box, width=1, border_radius=6)
         for i, line in enumerate(wrap_text(self.drone_state_text, self.font_small, self.panel_w - 16)[:2]):
             t = self.font_small.render(line, True, COLORS["text_cream"])
@@ -2742,7 +2705,7 @@ class Game:
         stats_hdr = self.font_ui_bold.render("Statistik Pencarian Terakhir", True, COLORS["text_dim"])
         screen.blit(stats_hdr, (x, self.stats_panel_y))
         stats_box = pygame.Rect(x, self.stats_panel_y + 18, self.panel_w, 78)
-        pygame.draw.rect(screen, (22, 21, 16), stats_box, border_radius=6)
+        pygame.draw.rect(screen, (20, 29, 17), stats_box, border_radius=6)
         pygame.draw.rect(screen, COLORS["panel_border"], stats_box, width=1, border_radius=6)
         for i, line in enumerate(self.stats_lines):
             t = self.font_small.render(line, True, COLORS["text_cream"])
