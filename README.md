@@ -2,7 +2,7 @@
 
 Simulasi berbasis **Python + Pygame** yang mendemonstrasikan dua kelas algoritma AI dalam satu permainan:
 
-1. **Pathfinding** (UCS dan A\*) — drone mencari dan mengejar tank di medan perang berbentuk grid, lengkap dengan *fog-of-war*.
+1. **Pathfinding** (UCS dan A\*) — drone mencari dan mengejar tank di medan perang berbentuk grid.
 2. **Adversarial search** (Minimax, Alpha-Beta Pruning, Expectimax) — saat drone cukup dekat, permainan berpindah ke mode *battle* bergiliran antara tank (pemain) dan drone (NPC).
 
 Proyek ini dibuat untuk keperluan pembelajaran algoritma pencarian dan dapat dipakai sebagai bahan eksperimen perbandingan antar algoritma.
@@ -60,7 +60,6 @@ Proyek ini dibuat untuk keperluan pembelajaran algoritma pencarian dan dapat dip
 ### Mode Eksplorasi (Pathfinding)
 - Medan acak: sungai, jembatan, pohon, batu, artileri anti-udara, kamp, dan bangunan runtuh.
 - Algoritma **UCS** dan **A\*** dengan tiga heuristik: Manhattan, Euclidean, Chebyshev.
-- **Fog-of-war**: drone hanya mendeteksi tank dalam radius pandang tertentu dan harus memiliki *line of sight* (algoritma Bresenham).
 - Drone punya beberapa status perilaku: memindai, bergerak, menyisir, mengejar, dan menyelidiki posisi terakhir tank.
 - Pola sisiran **boustrophedon** saat posisi tank belum diketahui.
 - Animasi gelombang ekspansi UCS/A\* pada pemindaian awal.
@@ -240,7 +239,6 @@ Saat ini seluruh program berada dalam **satu file** dan dibagi menjadi beberapa 
 | 1      | Konstanta dunia dan jenis medan                                                                          |
 | 2      | Pembangkit medan acak dan posisi awal                                                                    |
 | 3      | UCS / A\* (`search`) dan heuristik                                                                       |
-| 3B     | Fog-of-war: Bresenham, *line of sight*, pola sisiran                                                     |
 | 4      | Warna, konstanta tampilan, dan `apply_layout`                                                            |
 | 5      | Widget UI (`Button`, `wrap_text`)                                                                        |
 | 5B     | Mode battle: `BattleState`, `TreeNode`, `MinimaxAgent`, fungsi evaluasi, `BattleController`, `BattleHUD` |
@@ -283,16 +281,10 @@ Beberapa konstanta yang mudah disesuaikan:
 - Ukuran font tidak ikut membesar saat jendela diperbesar; hanya ruang tata letaknya.
 - Pohon pencarian yang digambar diturunkan kedalamannya otomatis bila terlalu lebar agar tetap terbaca.
 
-## Lisensi
-
-Tambahkan lisensi pilihanmu di sini (misalnya MIT) dan sertakan berkas `LICENSE` di repositori.# Tank vs Drone — Simulasi Pathfinding & Adversarial Search
-
-Simulasi berbasis **Python + Pygame** yang mendemonstrasikan dua kelas algoritma AI dalam satu permainan:
-
-1. **Pathfinding** (UCS dan A\*) — drone mencari dan mengejar tank di medan perang berbentuk grid, lengkap dengan *fog-of-war*.
+1. **Pathfinding** (UCS dan A\*) — drone mencari dan mengejar tank di medan perang berbentuk grid.
 2. **Adversarial search** (Minimax, Alpha-Beta Pruning, Expectimax) — saat drone cukup dekat, permainan berpindah ke mode *battle* bergiliran antara tank (pemain) dan drone (NPC).
 
-Proyek ini dibuat untuk keperluan pembelajaran algoritma pencarian dan dapat dipakai sebagai bahan eksperimen perbandingan antar algoritma.
+Proyek ini dibuat untuk memenuhi tugas besar dalam mata kuliah kecerdasa buatan.
 
 ---
 
@@ -318,7 +310,6 @@ Proyek ini dibuat untuk keperluan pembelajaran algoritma pencarian dan dapat dip
 ### Mode Eksplorasi (Pathfinding)
 - Medan acak: sungai, jembatan, pohon, batu, artileri anti-udara, kamp, dan bangunan runtuh.
 - Algoritma **UCS** dan **A\*** dengan tiga heuristik: Manhattan, Euclidean, Chebyshev.
-- **Fog-of-war**: drone hanya mendeteksi tank dalam radius pandang tertentu dan harus memiliki *line of sight* (algoritma Bresenham).
 - Drone punya beberapa status perilaku: memindai, bergerak, menyisir, mengejar, dan menyelidiki posisi terakhir tank.
 - Pola sisiran **boustrophedon** saat posisi tank belum diketahui.
 - Animasi gelombang ekspansi UCS/A\* pada pemindaian awal.
@@ -498,7 +489,6 @@ Saat ini seluruh program berada dalam **satu file** dan dibagi menjadi beberapa 
 | 1 | Konstanta dunia dan jenis medan |
 | 2 | Pembangkit medan acak dan posisi awal |
 | 3 | UCS / A\* (`search`) dan heuristik |
-| 3B | Fog-of-war: Bresenham, *line of sight*, pola sisiran |
 | 4 | Warna, konstanta tampilan, dan `apply_layout` |
 | 5 | Widget UI (`Button`, `wrap_text`) |
 | 5B | Mode battle: `BattleState`, `TreeNode`, `MinimaxAgent`, fungsi evaluasi, `BattleController`, `BattleHUD` |
