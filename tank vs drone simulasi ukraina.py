@@ -2,6 +2,7 @@ import math
 import random
 import sys
 import time
+
 import pygame
 
 # =============================================================================
@@ -1121,6 +1122,7 @@ def _tree_assign_positions(node, vis_depth, node_w, gap, leaf_counter,
 
 
 ACTION_LABELS = {ACT_ATTACK: "Serang", ACT_DEFEND: "Bertahan", ACT_REPAIR: "Reparasi", None: "ROOT"}
+MODE_LABELS = {MODE_MINIMAX: "Minimax", MODE_ALPHABETA: "Alpha-Beta", MODE_EXPECTIMAX: "Expectimax"}
 KIND_LABELS = {"terminal": "terminal (utility)", "cutoff": "cutoff (evaluasi)", "internal": "internal"}
 
 
@@ -1338,6 +1340,11 @@ class BattleController:
         self.player_wins = 0
         self.npc_wins = 0
 
+        # Dev Mode: ubah HP / kit reparasi kedua pihak secara instan, untuk
+        # menguji skenario tertentu (mis. HP kritis, kit reparasi habis)
+        # tanpa harus memainkannya sampai ke sana secara manual.
+        self.dev_mode = False
+
         self._build_buttons()
 
     # ------------------------------------------------------------------
@@ -1387,6 +1394,46 @@ class BattleController:
             (self.left_x + self.left_w - 110, self.btn_repair.rect.bottom + 14, 110, 22),
             "Mulai Ulang",
             self.restart_battle,
+        )
+
+        # ---- Dev Mode (kiri-bawah): ubah HP & kit reparasi secara instan ----
+        # Diberi jangkar dari area.bottom (bukan dari bawah log) supaya
+        # posisinya tetap stabil walau jumlah baris log berubah-ubah.
+        dev_h = 176
+        dev_y = area.bottom - dev_h
+        self.dev_y = dev_y
+        self.btn_dev_toggle = Button((self.left_x, dev_y, self.left_w, 24),
+                                      "Dev Mode: NONAKTIF", self.toggle_dev_mode)
+        row_y = dev_y + 24 + 20  # +20 utk baris label "MODE DEV -- ..."
+        btn_w = (self.left_w - 3 * 6) // 4
+
+        def hp_row(y, owner):
+            btns = []
+            for i, delta in enumerate((-10, -1, 1, 10)):
+                sign = "+" if delta > 0 else ""
+                bx = self.left_x + i * (btn_w + 6)
+                btns.append(Button((bx, y, btn_w, 22), f"{sign}{delta} HP",
+                                    lambda d=delta, o=owner: self.dev_adjust_hp(o, d)))
+            return btns
+
+        def kit_row(y, owner):
+            half_w = (self.left_w - 6) // 2
+            return [
+                Button((self.left_x, y, half_w, 22), "-1 Kit", lambda o=owner: self.dev_adjust_kit(o, -1)),
+                Button((self.left_x + half_w + 6, y, half_w, 22), "+1 Kit", lambda o=owner: self.dev_adjust_kit(o, 1)),
+            ]
+
+        self.dev_btns_tank_hp = hp_row(row_y, PLAYER)
+        row_y += 22 + 6
+        self.dev_btns_tank_kit = kit_row(row_y, PLAYER)
+        row_y += 22 + 14
+        self.dev_btns_drone_hp = hp_row(row_y, NPC)
+        row_y += 22 + 6
+        self.dev_btns_drone_kit = kit_row(row_y, NPC)
+
+        self.dev_adjust_buttons = (
+            self.dev_btns_tank_hp + self.dev_btns_tank_kit +
+            self.dev_btns_drone_hp + self.dev_btns_drone_kit
         )
 
         # ---- Panel kontrol kanan: algoritma / eval / urutan / depth / view ----
@@ -1443,7 +1490,8 @@ class BattleController:
         return (
             self.player_buttons + [self.btn_rematch, self.btn_return, self.btn_restart_small] +
             self.row_mode + self.row_eval + self.row_order +
-            self.row_depth + self.row_tree_depth + self.row_view + [self.btn_experiment]
+            self.row_depth + self.row_tree_depth + self.row_view + [self.btn_experiment] +
+            [self.btn_dev_toggle] + self.dev_adjust_buttons
         )
 
     # ------------------------------------------------------------------
@@ -1467,6 +1515,34 @@ class BattleController:
 
     def set_view(self, v):
         self.view = v
+
+    # ------------------------------------------------------------------
+    # DEV MODE -- ubah HP & kit reparasi kedua pihak secara instan (testing).
+    # Tidak lewat apply_action(); mengubah state.playerHP/npcHP dkk langsung.
+    # ------------------------------------------------------------------
+    def toggle_dev_mode(self):
+        self.dev_mode = not self.dev_mode
+
+    def dev_adjust_hp(self, owner, delta):
+        if not self.dev_mode or self.result_text is not None:
+            return
+        if owner == PLAYER:
+            self.state.playerHP = max(0, min(BATTLE_MAX_HP, self.state.playerHP + delta))
+        else:
+            self.state.npcHP = max(0, min(BATTLE_MAX_HP, self.state.npcHP + delta))
+        self._log(f"[Dev] {owner} HP -> {int(self.state.playerHP if owner == PLAYER else self.state.npcHP)}")
+        if self.state.is_terminal():
+            self._finish()
+
+    def dev_adjust_kit(self, owner, delta):
+        if not self.dev_mode or self.result_text is not None:
+            return
+        if owner == PLAYER:
+            self.state.playerRepairKits = max(0, min(9, self.state.playerRepairKits + delta))
+            self._log(f"[Dev] Kit Tank -> {self.state.playerRepairKits}")
+        else:
+            self.state.npcRepairKits = max(0, min(9, self.state.npcRepairKits + delta))
+            self._log(f"[Dev] Kit Drone -> {self.state.npcRepairKits}")
 
     # ------------------------------------------------------------------
     # ALUR BATTLE
@@ -1599,29 +1675,42 @@ class BattleController:
                              (MODE_EXPECTIMAX, "Expectimax")):
             rows.append((mlabel, run_one(mkey, ce, co, cd)))
 
-        rows.append((f"(2) Fungsi evaluasi -- Alpha-Beta, depth={cd}", None))
+        # Blok (2)-(4) memakai algoritma yang SEDANG KAMU PILIH (cm) sebagai
+        # baseline, bukan selalu dipaksa Alpha-Beta -- supaya kalau kamu ganti
+        # ke Minimax/Expectimax di panel kiri, seluruh tabel eksperimen (selain
+        # blok 1, yang memang membandingkan algoritma) ikut memakainya.
+        mlabel = MODE_LABELS[cm]
+
+        rows.append((f"(2) Fungsi evaluasi -- {mlabel}, depth={cd}", None))
         for ekey, (_, elabel) in EVAL_FUNCTIONS.items():
-            rows.append((elabel, run_one(MODE_ALPHABETA, ekey, co, cd)))
+            rows.append((elabel, run_one(cm, ekey, co, cd)))
 
-        rows.append((f"(3) Urutan aksi -- Alpha-Beta, eval={EVAL_FUNCTIONS[ce][1]}, depth={cd}", None))
+        rows.append((f"(3) Urutan aksi -- {mlabel}, eval={EVAL_FUNCTIONS[ce][1]}, depth={cd}", None))
         for okey, (_, olabel) in ACTION_ORDERS.items():
-            rows.append((olabel, run_one(MODE_ALPHABETA, ce, okey, cd)))
+            rows.append((olabel, run_one(cm, ce, okey, cd)))
 
-        rows.append((f"(4) Kedalaman -- Alpha-Beta, eval={EVAL_FUNCTIONS[ce][1]}", None))
+        rows.append((f"(4) Kedalaman -- {mlabel}, eval={EVAL_FUNCTIONS[ce][1]}", None))
         for d in range(1, 7):
-            rows.append((f"depth = {d}", run_one(MODE_ALPHABETA, ce, co, d)))
+            rows.append((f"depth = {d}", run_one(cm, ce, co, d)))
 
         self.experiment_rows = rows
+        pruning_note = (
+            "Dipangkas hanya akan >0 kalau algoritmanya Alpha-Beta -- Minimax murni & Expectimax "
+            "tidak pernah memangkas cabang (nilainya akan selalu 0 di blok 2-4)."
+            if cm != MODE_ALPHABETA else
+            "Urutan yang menaruh aksi terbaik lebih dulu memangkas lebih banyak (move ordering)."
+        )
         self.experiment_note = (
             "(1) Alpha-Beta selalu mengekspansi node <= Minimax murni (nilai/aksi terpilih sama; "
             "Expectimax beda karena giliran player dianggap ACAK, bukan lawan optimal, jadi bisa "
             "memilih aksi lebih 'berani'). "
-            "(2) Fungsi evaluasi mengubah AKSI yang dipilih NPC pada HP/kit reparasi sama -- ini yang "
-            "menunjukkan 'kepribadian' NPC (Agresif condong Serang, Defensif condong Bertahan/Reparasi). "
-            "(3) Urutan aksi TIDAK mengubah aksi/skor akhir tapi mengubah jumlah node dipangkas -- "
-            "urutan yang menaruh aksi terbaik lebih dulu memangkas lebih banyak (move ordering). "
-            "(4) Semakin dalam depth, node & waktu makin naik cepat (branching <=3), tapi keputusan "
-            "biasanya menstabil setelah depth tertentu."
+            f"(2) Fungsi evaluasi diuji memakai algoritma yang sedang aktif ({mlabel}) -- mengubah AKSI "
+            "yang dipilih NPC pada HP/kit reparasi sama menunjukkan 'kepribadian' NPC (Agresif condong "
+            "Serang, Defensif condong Bertahan/Reparasi). "
+            f"(3) Urutan aksi (dgn {mlabel}) TIDAK mengubah aksi/skor akhir karena pencarian tetap "
+            f"exhaustive/optimal, tapi bisa mengubah jumlah node dipangkas. {pruning_note} "
+            f"(4) Dengan {mlabel}, semakin dalam depth, node & waktu makin naik cepat (branching <=3), "
+            "tapi keputusan biasanya menstabil setelah depth tertentu."
         )
         self.view = "experiment"
 
@@ -1748,10 +1837,31 @@ class BattleHUD:
         log_hdr = font_ui_bold.render("Log Pertarungan", True, COLORS["text_dim"])
         screen.blit(log_hdr, (left_x, log_y))
         log_y += 20
+        # Log dibatasi supaya tidak menabrak panel Dev Mode di bawahnya
+        # (posisi dev panel dijangkar dari area.bottom, lihat _build_buttons).
+        max_log_y = controller.dev_y - 18
         for line in controller.log[-BATTLE_LOG_MAX:]:
+            if log_y > max_log_y:
+                break
             t = font_small.render(line, True, COLORS["text_cream"])
             screen.blit(t, (left_x, log_y))
             log_y += 16
+
+        # ---- Dev Mode: ubah HP & kit reparasi secara instan ----
+        battle_active = controller.result_text is None
+        controller.btn_dev_toggle.primary = controller.dev_mode
+        controller.btn_dev_toggle.label = "Dev Mode: AKTIF" if controller.dev_mode else "Dev Mode: NONAKTIF"
+        controller.btn_dev_toggle.draw(screen, font_ui_bold)
+
+        for btn in controller.dev_adjust_buttons:
+            btn.enabled = controller.dev_mode and battle_active
+        if controller.dev_mode:
+            hint = font_small.render("Tank:", True, COLORS["text_dim"])
+            screen.blit(hint, (left_x, controller.dev_btns_tank_hp[0].rect.y - 14))
+            hint2 = font_small.render("Drone:", True, COLORS["text_dim"])
+            screen.blit(hint2, (left_x, controller.dev_btns_drone_hp[0].rect.y - 14))
+        for btn in controller.dev_adjust_buttons:
+            btn.draw(screen, font_small)
 
         # ==================================================================
         # KOLOM KANAN -- panel kontrol (semua tombol) + debug + pohon/tabel
@@ -2401,7 +2511,7 @@ class Game:
         screen = self.screen
         screen.fill(COLORS["bg_deep"])
 
-        title = self.font_title.render("Tank vs Drone -- UCS/A* + Battle Minimax -- Simulasi Ukraina", True, COLORS["text_cream"])
+        title = self.font_title.render("Tank vs Drone Simulasi Ukraina", True, COLORS["text_cream"])
         screen.blit(title, (BOARD_X, 18))
 
         if self.mode == "battle":
@@ -2742,7 +2852,7 @@ class Game:
 # =============================================================================
 def main():
     pygame.init()
-    pygame.display.set_caption("Tank vs Drone -- UCS/A* + Battle Minimax -- Simulasi Ukraina")
+    pygame.display.set_caption("Tank vs Drone Simulasi Ukraina")
 
     # RESIZABLE: jendela boleh ditarik / di-maximize. Ukuran layar
     # sebenarnya ikut berubah, bukan sekadar gambar yang diperbesar.
