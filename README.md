@@ -1,4 +1,4 @@
-# Tank vs Drone — Simulasi Pathfinding & Adversarial Search
+# Tank vs Drone simulasi ukraina
 
 Simulasi berbasis **Python + Pygame** yang mendemonstrasikan dua kelas algoritma AI dalam satu permainan:
 
