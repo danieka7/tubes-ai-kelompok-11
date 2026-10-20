@@ -1042,7 +1042,7 @@ class BalanceParams:
 
 
 # Hasil local search terakhir (lihat `python <file> --tune`). Dipakai game.
-TUNED_PARAMS = BalanceParams(tank_hp=225, initial_drones=3, bom_hp=40, bom_damage=18, misil_hp=35, misil_damage=14, kamikaze_hp=24, kamikaze_damage=47, reinforce_after=9, reinforce_chance_pct=15)
+TUNED_PARAMS = BalanceParams(tank_hp=225, initial_drones=3, bom_hp=40, bom_damage=18, misil_hp=35, misil_damage=14, kamikaze_hp=24, kamikaze_damage=47, reinforce_after=6, reinforce_chance_pct=20)
 
 def build_loadouts(params):
     """Bangun tabel loadout dari parameter keseimbangan.
