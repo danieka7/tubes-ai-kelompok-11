@@ -1,0 +1,49 @@
+#*****************************************
+# * Filename : kb_rules.txt
+# * Programmer : Renaldy Heryana
+# * Date : xx-xx-xxxx
+# * Email : renaldyheryana2@gmail.com
+# * Deskripsi : Basis pengetahuan (aturan FOL) untuk KB Penasihat Tank, KB Interaksi NPC, dan KB Pusat Komando
+# *
+# *****************************************
+#
+# Dibaca game saat program mulai. Bila berkas ini hilang, atau sebuah bagian
+# kosong / salah sintaks, bagian itu memakai DEFAULT_RULES di kode dan
+# alasannya ditampilkan sebagai sumber KB di overlay.
+#
+# Format  : [NAMA_KB]  lalu satu aturan per baris:  LABEL: formula
+# Operator: ~ (tidak)   & (dan)   | (atau)   => (maka)   <=> (jika dan hanya jika)
+# Simbol  : predikat/proposisi diawali huruf besar, variabel huruf kecil
+#           (tertulis universal), konstanta berupa nama seperti R3C4 / DroneA.
+
+[ADVISOR]
+K1: InRange(c,d) & LineOfSight(c,d) => SeenBy(c,d)
+K2: ~InRange(c,d) => Hidden(c,d)
+K3: ~LineOfSight(c,d) => Hidden(c,d)
+K4: SeenBy(c,d) => Visible(c)
+K5: FirstDrone(d) & Hidden(c,d) => HiddenUpTo(c,d)
+K6: HiddenUpTo(c,d) & NextDrone(d,e) & Hidden(c,e) => HiddenUpTo(c,e)
+K7: HiddenUpTo(c,d) & LastDrone(d) => NotVisible(c)
+K8: NotVisible(c) => ~Visible(c)
+K9: Close(c,d) => Contact(c)
+K10: FirstDrone(d) & ~Close(c,d) => FarUpTo(c,d)
+K11: FarUpTo(c,d) & NextDrone(d,e) & ~Close(c,e) => FarUpTo(c,e)
+K12: FarUpTo(c,d) & LastDrone(d) => NoContact(c)
+K13: Passable(c) & NotVisible(c) & NoContact(c) => Safe(c)
+K14: Visible(c) => ~Safe(c)
+K15: Contact(c) => ~Safe(c)
+K16: ~Passable(c) => ~Safe(c)
+
+[NPC]
+S1: Ally(d,e) => Ally(e,d)
+S2: Spotted(d) & Ally(d,e) => Alerted(e)
+S3: Alerted(e) & ~Chasing(e) => Investigate(e)
+
+[COMMAND]
+R1: Outnumbered <=> ForceWeak | (DroneLost & TankHealthy)
+R2: Busy <=> Reinforced | EnRoute
+R3: CallReinforcement <=> Outnumbered & ~Busy & GraceOver & SlotFree & QuotaLeft
+R4: TankDamaged & MisilAlive => NeedFinisher
+R5: TankDamaged & ~MisilAlive => NeedPressure
+R6: ~TankDamaged & ForceWeak => NeedDurable
+R7: ~TankDamaged & ~ForceWeak => NeedPressure

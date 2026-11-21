@@ -6,6 +6,8 @@ main) sesuai urutan dependensi. Isi dan nomor BAGIAN sama dengan versi modul.
 
 Basis pengetahuan tetap dibaca dari kb_rules.txt di folder yang sama; bila file
 itu tidak ada, aturan bawaan (DEFAULT_RULES) yang dipakai.
+Skema aksi planner logistik dibaca dari drone_domain.txt; bila file itu tidak ada
+atau salah sintaks, DEFAULT_LOGISTICS_SCHEMAS yang dipakai.
 
 Jalankan:  python tank_vs_drone_satu_file.py [--tune [n] | --mdp-report]
 """
@@ -3438,7 +3440,7 @@ def _engage_cost(b):
     return ROLE_COST[b["?r"]][b["?l"]]
 
 
-LOGISTICS_SCHEMAS = (
+DEFAULT_LOGISTICS_SCHEMAS = (
     Schema("arm", (("?u", "unit"), ("?b", "sector")),
            pre=(("idle", "?u"), ("at", "?u", "?b"), ("base", "?b")),
            add=(("armed", "?u"),), dele=(("idle", "?u"),), cost=1,
@@ -3470,6 +3472,127 @@ LOGISTICS_SCHEMAS = (
            add=(("on-station", "?r"), ("deployed", "?u")), dele=(("armed", "?u"), ("at", "?u", "?s")),
            cost=_engage_cost, doc="seperti engage, tetapi butuh target-lock (kamikaze sebagai finisher)"),
 )
+
+
+# ---- 14.1 pemuat skema aksi (drone_domain.txt + fallback di kode) -----------
+PLAN_FILE = Path(__file__).with_name("drone_domain.txt")
+PLAN_COMMENT_PREFIX = "#"
+PLAN_OBJECT_TYPES = ("unit", "sector", "loadout", "role")    # kunci LogisticsWorld.objects
+PLAN_SECTION_KEYS = ("pre", "add", "del", "cost", "doc")
+# Biaya yang bergantung pada binding tidak bisa ditulis sebagai angka, jadi diacu lewat nama.
+PLAN_COST_FUNCTIONS = {"engage-cost": _engage_cost}
+
+
+class PlanDomainError(ValueError):
+    """Teks drone_domain.txt tidak sesuai format."""
+
+
+def _parse_param(token):
+    """'?u:unit' -> ('?u', 'unit'). Raises PlanDomainError bila bentuk/tipe salah."""
+    name, separator, type_name = token.partition(":")
+    if not name.startswith("?") or not separator or type_name not in PLAN_OBJECT_TYPES:
+        raise PlanDomainError(f"parameter '{token}' harus berbentuk ?nama:tipe dengan tipe {PLAN_OBJECT_TYPES}")
+    return name, type_name
+
+
+def _parse_literals(body):
+    """'at ?u ?a ; open ?b' -> (('at', '?u', '?a'), ('open', '?b')). Waktu O(panjang body)."""
+    return tuple(tuple(part.split()) for part in body.split(";") if part.strip())
+
+
+def _parse_cost(body):
+    """Angka tak-negatif atau nama di PLAN_COST_FUNCTIONS. Raises PlanDomainError bila selain itu."""
+    text = body.strip()
+    if text in PLAN_COST_FUNCTIONS:
+        return PLAN_COST_FUNCTIONS[text]
+    try:
+        value = float(text)
+    except ValueError:
+        raise PlanDomainError(f"biaya '{text}' bukan angka atau nama fungsi {tuple(PLAN_COST_FUNCTIONS)}") from None
+    if not math.isfinite(value) or value < 0:
+        raise PlanDomainError(f"biaya '{text}' harus angka hingga >= 0")
+    return int(value) if value.is_integer() else value
+
+
+def _new_action_block(line):
+    """Baris 'action <nama> ?p:tipe ...' -> blok kosong yang diisi baris berikutnya."""
+    parts = line.split()[1:]
+    if not parts:
+        raise PlanDomainError("baris 'action' tanpa nama")
+    return {"name": parts[0], "params": tuple(_parse_param(t) for t in parts[1:]),
+            "pre": (), "add": (), "del": (), "cost": 1, "doc": ""}
+
+
+def _read_domain_line(blocks, line):
+    """Terapkan satu baris (tanpa komentar) ke daftar blok. Raises PlanDomainError."""
+    if line.startswith("action "):
+        blocks.append(_new_action_block(line))
+        return
+    key, separator, body = line.partition(":")
+    key = key.strip()
+    if not blocks or not separator or key not in PLAN_SECTION_KEYS:
+        raise PlanDomainError(f"baris tidak dikenali: {line}")
+    if key == "cost":
+        blocks[-1][key] = _parse_cost(body)
+    elif key == "doc":
+        blocks[-1][key] = body.strip()
+    else:
+        blocks[-1][key] = _parse_literals(body)
+
+
+def _check_schema(schema):
+    """Efek add tidak boleh kosong dan semua variabel harus dideklarasikan di parameter."""
+    if not schema.add:
+        raise PlanDomainError(f"aksi {schema.name}: efek add kosong")
+    declared = {name for name, _ in schema.params}
+    for literal in schema.pre + schema.add + schema.dele:
+        undeclared = [t for t in literal[1:] if _is_param(t) and t not in declared]
+        if undeclared:
+            raise PlanDomainError(f"aksi {schema.name}: variabel {undeclared[0]} tidak ada di parameter")
+
+
+def parse_domain_text(text):
+    """Teks drone_domain.txt -> tuple Schema. Waktu O(n) untuk n karakter, memori O(n).
+
+    Raises: PlanDomainError (dengan nomor baris) bila format salah, tidak ada aksi,
+    atau nama aksi ganda."""
+    blocks = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split(PLAN_COMMENT_PREFIX, 1)[0].strip()
+        if not line:
+            continue
+        try:
+            _read_domain_line(blocks, line)
+        except PlanDomainError as err:
+            raise PlanDomainError(f"baris {number}: {err}") from err
+    if not blocks:
+        raise PlanDomainError("tidak ada skema aksi")
+    schemas = tuple(Schema(b["name"], b["params"], b["pre"], b["add"], b["del"], b["cost"], b["doc"])
+                    for b in blocks)
+    if len({s.name for s in schemas}) != len(schemas):
+        raise PlanDomainError("nama aksi ganda")
+    for schema in schemas:
+        _check_schema(schema)
+    return schemas
+
+
+def load_logistics_schemas(path=PLAN_FILE):
+    """Return (skema, keterangan_sumber). Bila berkas hilang / rusak, skema bawaan kode
+    dipakai dan keterangan sumbernya menjelaskan alasannya."""
+    name = Path(path).name
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return DEFAULT_LOGISTICS_SCHEMAS, f"bawaan kode ({name} tidak ditemukan)"
+    except (OSError, UnicodeDecodeError) as err:
+        return DEFAULT_LOGISTICS_SCHEMAS, f"bawaan kode ({name} tidak dapat dibaca: {err})"
+    try:
+        return parse_domain_text(text), name
+    except PlanDomainError as err:
+        return DEFAULT_LOGISTICS_SCHEMAS, f"bawaan kode ({name} {err})"
+
+
+LOGISTICS_SCHEMAS, LOGISTICS_SOURCE = load_logistics_schemas()
 
 
 def sector_of(cell):
@@ -3667,6 +3790,7 @@ class CommandCenter:
         """Jalankan planning graph, A*, UCS, dan regresi; tulis semuanya ke trace."""
         w = self.world
         trace.add("hdr", f"Planner -- domain logistik drone ({len(LOGISTICS_SCHEMAS)} skema berparameter, * = statik):")
+        trace.add("dim", f"   Sumber skema: {LOGISTICS_SOURCE}")
         for schema in LOGISTICS_SCHEMAS:
             trace.add("dim", "   " + schema.describe(w.static_preds))
         g = w.grounding

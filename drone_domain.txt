@@ -1,0 +1,73 @@
+#*****************************************
+# * Filename : drone_domain.txt
+# * Programmer : Renaldy Heryana
+# * Date : xx-xx-xxxx
+# * Email : renaldyheryana2@gmail.com
+# * Deskripsi : Skema aksi planner logistik pusat komando musuh (setara PDDL :action)
+# *
+# *****************************************
+#
+# Dibaca game saat program mulai. Bila berkas ini hilang / salah sintaks, game
+# memakai DEFAULT_LOGISTICS_SCHEMAS di kode dan menampilkan alasannya pada baris
+# "Sumber skema" di tab Komando.
+#
+# Format  : action <nama> ?parameter:tipe ...
+#             pre:  fakta ; fakta     (precondition)
+#             add:  fakta ; fakta     (effect positif, wajib ada)
+#             del:  fakta ; fakta     (effect negatif, boleh dihilangkan)
+#             cost: angka >= 0 | engage-cost   (boleh dihilangkan, bawaan 1)
+#             doc:  keterangan singkat         (boleh dihilangkan)
+# Tipe    : unit, sector, loadout, role
+# Fakta   : predikat diikuti argumen, dipisah spasi. Variabel diawali '?'.
+# Statik  : predikat yang tidak pernah muncul di add/del (adj, aa, open, base,
+#           battle, loadout, direct, guided) dibuat game dari peta.
+# Catatan : kode komando mengenali aksi bernama "engage" dan "engage-guided"
+#           (efek on-station ?r dan deployed ?u); jangan ubah nama keduanya.
+
+action arm ?u:unit ?b:sector
+  pre: idle ?u ; at ?u ?b ; base ?b
+  add: armed ?u
+  del: idle ?u
+  cost: 1
+  doc: persenjatai unit di pangkalan
+
+action fly ?u:unit ?a:sector ?b:sector
+  pre: armed ?u ; at ?u ?a ; adj ?a ?b ; open ?b
+  add: at ?u ?b
+  del: at ?u ?a
+  cost: 1
+  doc: terbang ke sektor tetangga yang bebas artileri
+
+action jam ?s:sector
+  pre: ew-ready ; aa ?s
+  add: suppressed ?s
+  del: ew-ready
+  cost: 2
+  doc: jammer EW (sekali pakai) melumpuhkan artileri di satu sektor
+
+action fly-jammed ?u:unit ?a:sector ?b:sector
+  pre: armed ?u ; at ?u ?a ; adj ?a ?b ; aa ?b ; suppressed ?b
+  add: at ?u ?b
+  del: at ?u ?a
+  cost: 1
+  doc: terbang masuk sektor artileri yang sudah di-jam
+
+action designate ?s:sector
+  pre: spotter-alive ; battle ?s
+  add: target-lock ?s
+  cost: 1
+  doc: drone yang masih bertempur menandai target untuk bantuan berpemandu
+
+action engage ?u:unit ?l:loadout ?s:sector ?r:role
+  pre: armed ?u ; at ?u ?s ; battle ?s ; loadout ?u ?l ; direct ?l ?r ; window ?r ; slot-free
+  add: on-station ?r ; deployed ?u
+  del: armed ?u ; at ?u ?s
+  cost: engage-cost
+  doc: unit bergabung ke pertempuran memenuhi peran ?r
+
+action engage-guided ?u:unit ?l:loadout ?s:sector ?r:role
+  pre: armed ?u ; at ?u ?s ; battle ?s ; loadout ?u ?l ; guided ?l ?r ; target-lock ?s ; window ?r ; slot-free
+  add: on-station ?r ; deployed ?u
+  del: armed ?u ; at ?u ?s
+  cost: engage-cost
+  doc: seperti engage, tetapi butuh target-lock (kamikaze sebagai finisher)
