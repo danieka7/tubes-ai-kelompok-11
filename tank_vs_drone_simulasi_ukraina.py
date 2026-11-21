@@ -1,23 +1,40 @@
+"""Tank vs Drone Simulasi Ukraina 
+
+Dibuat otomatis dengan menggabungkan modul-modul proyek (world, pathfinding, ui,
+battle, balance, npc_local_search, kb, planner, command, mdp, battle_ui, game,
+main) sesuai urutan dependensi. Isi dan nomor BAGIAN sama dengan versi modul.
+
+Basis pengetahuan tetap dibaca dari kb_rules.txt di folder yang sama; bila file
+itu tidak ada, aturan bawaan (DEFAULT_RULES) yang dipakai.
+
+Jalankan:  python tank_vs_drone_satu_file.py [--tune [n] | --mdp-report]
+"""
 import heapq
 import itertools
 import math
 import random
 import re
-from array import array
-from collections import deque
 import sys
 import time
+from array import array
+from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 import pygame
 
+
+# #############################################################################
+# MODUL world.py
+# #############################################################################
 # =============================================================================
 # BAGIAN 1 -- KONSTANTA DUNIA & JENIS MEDAN
 # =============================================================================
 ROWS = 16
 COLS = 22
-CELL = 30
+
+
 
 DIRT = 0
 TREE = 1
@@ -532,6 +549,9 @@ def pick_random_start_positions():
     return drone_pos, tank_pos
 
 
+# #############################################################################
+# MODUL pathfinding.py
+# #############################################################################
 # =============================================================================
 # BAGIAN 3 -- ALGORITMA PENCARIAN: UCS & A* DALAM SATU FUNGSI
 # =============================================================================
@@ -638,7 +658,7 @@ def search(grid, start, goal, algorithm, heuristic_name):
 
 
 # =============================================================================
-# BAGIAN 3B -- FOG OF WAR: LINE OF SIGHT & POLA PENCARIAN
+# BAGIAN 4 -- FOG OF WAR: LINE OF SIGHT & POLA PENCARIAN
 # =============================================================================
 def bresenham_line(r0, c0, r1, c1):
     points = []
@@ -696,8 +716,11 @@ def find_nearest_search_index(pattern, pos):
     return best_idx
 
 
+# #############################################################################
+# MODUL ui.py
+# #############################################################################
 # =============================================================================
-# BAGIAN 4 -- WARNA & KONSTANTA TAMPILAN
+# BAGIAN 5 -- WARNA & KONSTANTA TAMPILAN
 # =============================================================================
 COLORS = {
     "bg_deep": (26, 36, 22),
@@ -754,6 +777,7 @@ SCAN_PATH_PAUSE_MS = 550
 INTRO_MOVE_TICK_MS = 320
 AUTO_CHASE_TICK_MS = 450
 
+CELL = 30
 BOARD_X, BOARD_Y = 20, 56
 BOARD_W, BOARD_H = COLS * CELL, ROWS * CELL
 
@@ -849,7 +873,7 @@ LEGEND_ITEMS = [
 
 
 # =============================================================================
-# BAGIAN 5 -- WIDGET UI SEDERHANA (tombol, dropdown, checkbox)
+# BAGIAN 6 -- WIDGET UI SEDERHANA (tombol, teks terbungkus, panah)
 # =============================================================================
 MDP_HEAT_LOW = (176, 64, 52)      # V(s) terendah
 MDP_HEAT_HIGH = (96, 204, 112)     # V(s) tertinggi
@@ -915,8 +939,75 @@ def wrap_text(text, font, max_width):
     return lines
 
 
+
+
 # =============================================================================
-# BAGIAN 5B -- MODE BATTLE: MINIMAX / ALPHA-BETA (ADVERSARIAL SEARCH)
+# BAGIAN 7 -- OVERLAY INFERENSI (mode eksplorasi & tab Komando di battle)
+# =============================================================================
+OVERLAY_LINE_H = 14
+OVERLAY_COLORS = {
+    "hdr": (200, 230, 140), "good": (150, 220, 120), "bad": (226, 100, 90),
+    "warn": (240, 170, 80), "dim": (160, 182, 128), "normal": (220, 234, 196),
+}
+
+
+def overlay_wrapped_lines(trace, font, width):
+    rows = []
+    width -= font.size("     ")[0]      # sisakan ruang untuk indentasi baris lanjutan
+    for style, text in trace.lines:
+        parts = wrap_text(text, font, width)
+        for idx, part in enumerate(parts or [""]):
+            rows.append((style, ("     " if idx else "") + part))
+    return rows
+
+
+_OVERLAY_VEILS = {}     # ukuran -> surface selubung transparan (dibuat sekali)
+
+
+def draw_kb_overlay(screen, fonts, trace, rect, scroll, translucent=True, with_close=True):
+    """Gambar panel inferensi di `rect`. Return (close_rect | None, max_scroll)."""
+    font_small = fonts.get("overlay", fonts["small"])
+    font_bold = fonts.get("overlay_bold", fonts["ui_bold"])
+    line_h = max(OVERLAY_LINE_H, font_small.get_linesize() + 1)
+    if translucent:
+        veil = _OVERLAY_VEILS.get(rect.size)
+        if veil is None:
+            veil = _OVERLAY_VEILS[rect.size] = pygame.Surface(rect.size, pygame.SRCALPHA)
+            veil.fill((12, 20, 10, 238))
+        screen.blit(veil, rect.topleft)
+    else:
+        pygame.draw.rect(screen, (20, 29, 17), rect, border_radius=6)
+    pygame.draw.rect(screen, COLORS["accent"], rect, width=2, border_radius=6)
+
+    screen.blit(font_bold.render(trace.title, True, COLORS["accent_hover"]), (rect.x + 10, rect.y + 7))
+    close_rect = None
+    if with_close:
+        close_rect = pygame.Rect(rect.right - 84, rect.y + 5, 76, 24)
+        pygame.draw.rect(screen, (70, 40, 36), close_rect, border_radius=5)
+        label = font_small.render("Tutup X", True, COLORS["text_cream"])
+        screen.blit(label, label.get_rect(center=close_rect.center))
+
+    rows = overlay_wrapped_lines(trace, font_small, rect.w - 28)
+    top = rect.y + 10 + font_bold.get_linesize() + 6
+    visible = max(1, (rect.bottom - 8 - top) // line_h)
+    if len(rows) > visible:     # sisakan satu baris di bawah untuk petunjuk gulir
+        visible = max(1, visible - 1)
+    max_scroll = max(0, len(rows) - visible)
+    scroll = max(0, min(scroll, max_scroll))
+    for i, (style, text) in enumerate(rows[scroll:scroll + visible]):
+        screen.blit(font_small.render(text, True, OVERLAY_COLORS[style]), (rect.x + 12, top + i * line_h))
+    if max_scroll:
+        hint = font_small.render(f"gulir: roda mouse ({scroll + 1}-{min(len(rows), scroll + visible)}/{len(rows)})",
+                                 True, COLORS["text_dim"])
+        screen.blit(hint, (rect.right - 12 - hint.get_width(), rect.bottom - 6 - line_h))
+    return close_rect, max_scroll
+
+
+# #############################################################################
+# MODUL battle.py
+# #############################################################################
+# =============================================================================
+# BAGIAN 8 -- MODE BATTLE: MINIMAX / ALPHA-BETA (ADVERSARIAL SEARCH)
 # =============================================================================
 # Begitu drone cukup dekat dengan tank, permainan berpindah dari pathfinding
 # di grid (UCS/A*) ke sub-sistem battle terpisah yang state-nya sederhana
@@ -934,6 +1025,7 @@ NPC = "NPC"
 ACT_ATTACK = "ATTACK"
 ACT_DEFEND = "DEFEND"
 ACT_REPAIR = "REPAIR"
+ACTION_LABELS = {ACT_ATTACK: "Serang", ACT_DEFEND: "Bertahan", ACT_REPAIR: "Reparasi", None: "ROOT"}
 
 BATTLE_START_REPAIR_KITS = 3
 ATTACK_DAMAGE = 18
@@ -964,7 +1056,7 @@ LOCAL_MODES = (MODE_HILL, MODE_ANNEAL)
 
 
 # =============================================================================
-# BAGIAN 5B.1 -- BERBAGAI FUNGSI EVALUASI (untuk eksperimen "tingkah laku NPC")
+# BAGIAN 8.1 -- BERBAGAI FUNGSI EVALUASI (untuk eksperimen "tingkah laku NPC")
 # =============================================================================
 # Semua Eval(s) di bawah dipakai HANYA pada cutoff non-terminal (depth limit),
 # bukan sebagai utility. Bobot berbeda -> "kepribadian" NPC berbeda meski
@@ -1032,11 +1124,11 @@ ACTION_ORDERS = {
 
 
 # =============================================================================
-# BAGIAN 5B.2 -- LOADOUT DRONE, GELOMBANG MUSUH & PARAMETER KESEIMBANGAN
+# BAGIAN 8.2 -- LOADOUT DRONE, GELOMBANG MUSUH & PARAMETER KESEIMBANGAN
 # =============================================================================
 # Semua angka keseimbangan (HP tank, jumlah drone, statistik tiap loadout,
 # aturan bantuan musuh) dikumpulkan di BalanceParams supaya bisa dicari
-# otomatis oleh local search (BAGIAN 5B.4), bukan ditebak manual.
+# otomatis oleh local search (BAGIAN 9, balance.py), bukan ditebak manual.
 
 MAX_ACTIVE_DRONES = 6           # batas drone hidup bersamaan (muat di daftar HUD)
 MAX_REINFORCEMENTS = 6          # batas total drone bantuan per pertempuran
@@ -1442,810 +1534,10 @@ class MinimaxAgent:
         return best_action
 
 
-# =============================================================================
-# BAGIAN 5C -- KNOWLEDGE BASE, RESOLUSI (FOL) & PLANNER (STRIPS / PDDL)
-# =============================================================================
-# Materi minggu 7 (Logic & Representasi Pengetahuan) dan minggu 8 (Automated
-# Planning) dipakai di sini. Tiga hal sengaja DIPISAH dari kode game:
-#
-#   1. KB          -- aturan ditulis sebagai teks deklaratif (daftar *_RULES di
-#                     bawah). Mengubah perilaku NPC/komando = mengubah teks
-#                     aturan, bukan mengubah kode inferensi.
-#   2. Inferensi   -- KnowledgeBase: parser -> CNF -> resolution refutation
-#                     (negasikan goal, cari klausa kosong). Mendukung variabel
-#                     (FOL tanpa fungsi & tanpa kuantor eksistensial) lewat
-#                     unifikasi.
-#   3. Planner     -- STRIPS: state = himpunan fakta, aksi = (pre, add, del),
-#                     Result(s,a) = (s - del) | add. Pencarian A* maju dengan
-#                     heuristik ignore-delete-lists.
-#
-# Konvensi penulisan (ASCII supaya aman dirender font pygame):
-#   ~ = NOT   & = AND   | = OR   => = IF-THEN   <=> = IFF
-#   huruf kecil di awal = variabel (otomatis dikuantifikasi universal)
-#   huruf besar di awal = konstanta / nama predikat
-
-MAX_CLAUSE_LITERALS = 5        # pengaman: resolvent lebih panjang dibuang
-MAX_GENERATED_CLAUSES = 1500   # pengaman: batas klausa baru per pembuktian
-
-_TOKEN_RE = re.compile(r"\s*(<=>|=>|[()~&|,]|[A-Za-z_][A-Za-z0-9_]*)")
-
-
-def _is_var(term):
-    return term[0].islower()
-
-
-# ---- parser teks -> pohon formula -----------------------------------------
-def _tokenize(text):
-    tokens, pos, text = [], 0, text.strip()
-    while pos < len(text):
-        match = _TOKEN_RE.match(text, pos)
-        if not match:
-            raise ValueError(f"Sintaks KB tidak dikenal di: '{text[pos:]}'")
-        tokens.append(match.group(1))
-        pos = match.end()
-    return tokens
-
-
-class _FormulaParser:
-    """Presedensi (kuat -> lemah): ~  &  |  =>  <=>"""
-
-    def __init__(self, text):
-        self.tokens = _tokenize(text)
-        self.i = 0
-
-    def _peek(self):
-        return self.tokens[self.i] if self.i < len(self.tokens) else None
-
-    def _take(self, expected=None):
-        tok = self._peek()
-        if tok is None or (expected is not None and tok != expected):
-            raise ValueError(f"Sintaks KB: diharapkan '{expected}', dapat '{tok}'")
-        self.i += 1
-        return tok
-
-    def parse(self):
-        node = self._iff()
-        if self._peek() is not None:
-            raise ValueError(f"Sintaks KB: sisa token '{self._peek()}'")
-        return node
-
-    def _iff(self):
-        left = self._imp()
-        while self._peek() == "<=>":
-            self._take()
-            left = ("iff", left, self._imp())
-        return left
-
-    def _imp(self):
-        left = self._or()
-        if self._peek() == "=>":
-            self._take()
-            return ("imp", left, self._imp())
-        return left
-
-    def _or(self):
-        left = self._and()
-        while self._peek() == "|":
-            self._take()
-            left = ("or", left, self._and())
-        return left
-
-    def _and(self):
-        left = self._unary()
-        while self._peek() == "&":
-            self._take()
-            left = ("and", left, self._unary())
-        return left
-
-    def _unary(self):
-        if self._peek() == "~":
-            self._take()
-            return ("not", self._unary())
-        if self._peek() == "(":
-            self._take()
-            node = self._iff()
-            self._take(")")
-            return node
-        return self._atom()
-
-    def _atom(self):
-        name = self._take()
-        args = []
-        if self._peek() == "(":
-            self._take()
-            args.append(self._take())
-            while self._peek() == ",":
-                self._take()
-                args.append(self._take())
-            self._take(")")
-        return ("atom", name, tuple(args))
-
-
-# ---- konversi ke CNF (4 langkah di slide) ---------------------------------
-def _eliminate_arrows(node):
-    """Langkah 1-2: buang <=> lalu =>  (a => b  menjadi  ~a | b)."""
-    kind = node[0]
-    if kind == "atom":
-        return node
-    if kind == "not":
-        return ("not", _eliminate_arrows(node[1]))
-    if kind in ("and", "or"):
-        return (kind, _eliminate_arrows(node[1]), _eliminate_arrows(node[2]))
-    a, b = _eliminate_arrows(node[1]), _eliminate_arrows(node[2])
-    if kind == "imp":
-        return ("or", ("not", a), b)
-    return ("and", ("or", ("not", a), b), ("or", ("not", b), a))   # iff
-
-
-def _push_negation(node, negated=False):
-    """Langkah 3: De Morgan & negasi ganda -> negasi hanya menempel di atom."""
-    kind = node[0]
-    if kind == "atom":
-        return ("lit", negated, node[1], node[2])
-    if kind == "not":
-        return _push_negation(node[1], not negated)
-    left, right = _push_negation(node[1], negated), _push_negation(node[2], negated)
-    if kind == "and":
-        return ("or" if negated else "and", left, right)
-    return ("and" if negated else "or", left, right)
-
-
-def _distribute(node):
-    """Langkah 4: distribusikan | atas &  -> daftar klausa (daftar literal)."""
-    if node[0] == "lit":
-        return [[(node[1], node[2], node[3])]]
-    left, right = _distribute(node[1]), _distribute(node[2])
-    if node[0] == "and":
-        return left + right
-    return [l + r for l in left for r in right]
-
-
-def _canonical(literals):
-    """Klausa kanonik: tanpa duplikat, variabel diberi nama v1,v2,... urut
-    kemunculan. Return None bila tautologi (P | ~P), () bila klausa kosong."""
-    unique = set(literals)
-    for neg, pred, args in unique:
-        if (not neg, pred, args) in unique:
-            return None
-    ordered = sorted(unique, key=lambda l: (l[1], l[0], tuple("_" if _is_var(x) else x for x in l[2])))
-    naming, result = {}, []
-    for neg, pred, args in ordered:
-        renamed = []
-        for term in args:
-            if _is_var(term):
-                naming.setdefault(term, f"v{len(naming) + 1}")
-                renamed.append(naming[term])
-            else:
-                renamed.append(term)
-        result.append((neg, pred, tuple(renamed)))
-    return tuple(dict.fromkeys(result))
-
-
-def formula_to_clauses(text):
-    """Teks formula -> daftar klausa CNF (tuple literal), tautologi dibuang."""
-    tree = _FormulaParser(text).parse()
-    clauses = []
-    for lits in _distribute(_push_negation(_eliminate_arrows(tree))):
-        clause = _canonical(lits)
-        if clause is not None:
-            clauses.append(clause)
-    return clauses
-
-
-# ---- unifikasi & resolusi --------------------------------------------------
-def _walk(term, subst):
-    while _is_var(term) and term in subst:
-        term = subst[term]
-    return term
-
-
-def _unify(args_a, args_b):
-    subst = {}
-    for x, y in zip(args_a, args_b):
-        x, y = _walk(x, subst), _walk(y, subst)
-        if x == y:
-            continue
-        if _is_var(x):
-            subst[x] = y
-        elif _is_var(y):
-            subst[y] = x
-        else:
-            return None
-    return subst
-
-
-def _rename_apart(clause):
-    return tuple((n, p, tuple(f"{t}_2" if _is_var(t) else t for t in a)) for n, p, a in clause)
-
-
-def _resolve_pair(c1, i, c2, j):
-    """Resolvent dari literal ke-i di c1 dan literal ke-j di c2 (c2 di-rename
-    dulu). Return klausa kanonik, None bila tak bisa diunifikasi / tautologi /
-    terlalu panjang. Kompleksitas O(|c1| + |c2|)."""
-    c2 = _rename_apart(c2)
-    (n1, p1, a1), (n2, p2, a2) = c1[i], c2[j]
-    if p1 != p2 or n1 == n2 or len(a1) != len(a2):
-        return None
-    subst = _unify(a1, a2)
-    if subst is None:
-        return None
-    rest = [(n, p, tuple(_walk(t, subst) for t in a)) for k, (n, p, a) in enumerate(c1) if k != i]
-    rest += [(n, p, tuple(_walk(t, subst) for t in a)) for k, (n, p, a) in enumerate(c2) if k != j]
-    merged = _canonical(rest)
-    if merged is not None and len(merged) <= MAX_CLAUSE_LITERALS:
-        return merged
-    return None
-
-
-def format_literal(lit):
-    neg, pred, args = lit
-    return ("~" if neg else "") + pred + (f"({','.join(args)})" if args else "")
-
-
-def format_clause(clause):
-    return "[] (klausa kosong)" if not clause else " | ".join(format_literal(l) for l in clause)
-
-
-@dataclass
-class ProofResult:
-    proved: bool
-    lines: list            # baris bukti siap tampil
-    rules_used: list       # label aturan KB yang dipakai
-    generated: int         # jumlah klausa baru yang dibangkitkan
-    saturated: bool = False   # True: semua resolvent habis (bukan kena batas) tanpa klausa kosong
-
-
-@dataclass
-class Answer:
-    verdict: str           # "YA" | "TIDAK" | "TIDAK PASTI"
-    proof: ProofResult     # bukti untuk verdict (atau percobaan terakhir bila tidak pasti)
-    generated: int
-    saturated: bool = False   # untuk TIDAK PASTI: kedua pembuktian benar-benar jenuh
-
-
-class KnowledgeBase:
-    """Kumpulan klausa CNF + mesin resolution refutation.
-
-    tell(): tambah fakta/kalimat.  ask(): jawab YA (KB |= q), TIDAK (KB |= ~q),
-    atau TIDAK PASTI (keduanya tidak terbukti -> butuh informasi tambahan)."""
-
-    def __init__(self, rules=()):
-        self.clauses = []          # [(label, clause)]
-        for label, text in rules:
-            for clause in formula_to_clauses(text):
-                self.clauses.append((label, clause))
-
-    def copy(self):
-        clone = KnowledgeBase()
-        clone.clauses = list(self.clauses)
-        return clone
-
-    def tell(self, text, label="fakta"):
-        for clause in formula_to_clauses(text):
-            self.clauses.append((label, clause))
-
-    def entails(self, text):
-        """KB |= text ?  Resolution refutation dengan strategi set-of-support
-        (hanya turunan dari negasi goal yang dikembangkan), input resolution
-        (turunan hanya di-resolve dengan klausa KB), satu literal terpilih per
-        klausa (seperti SLD), klausa terpendek lebih dulu.
-        Dengan konstanta berhingga & batas panjang, selalu berhenti."""
-        negated = formula_to_clauses(f"~({text})")
-        info, seen = {}, {}
-        usable = []
-        for label, clause in self.clauses:
-            cid = len(info) + 1
-            info[cid] = (clause, (), label)
-            seen.setdefault(clause, cid)
-            usable.append(cid)
-
-        # indeks (tanda, predikat) -> [(id klausa input, posisi literal)]
-        index = {}
-        for cid in usable:
-            for pos, (neg, pred, _) in enumerate(info[cid][0]):
-                index.setdefault((neg, pred), []).append((cid, pos))
-
-        heap = []
-        for clause in negated:
-            cid = len(info) + 1
-            info[cid] = (clause, (), "negasi goal")
-            seen.setdefault(clause, cid)
-            heapq.heappush(heap, (len(clause), cid))
-
-        generated, empty_id = 0, None
-        while heap and generated < MAX_GENERATED_CLAUSES and empty_id is None:
-            _, cid = heapq.heappop(heap)
-            clause = info[cid][0]
-            # literal terpilih = yang kandidat lawannya paling sedikit (first-fail).
-            # Literal tanpa kandidat tidak mungkin dihabiskan -> klausa buntu, buang.
-            options = [index.get((not neg, pred), []) for neg, pred, _ in clause]
-            if any(not cands for cands in options):
-                continue
-            # literal yang cocok dengan sebuah fakta dihabiskan dulu (klausa tetap
-            # pendek), lalu yang kandidatnya paling sedikit
-            def fact_match(k):
-                return any(info[c][2].startswith("fakta") and _unify(clause[k][2], info[c][0][p][2]) is not None
-                           for c, p in options[k])
-            chosen = min(range(len(clause)), key=lambda k: (0 if fact_match(k) else 1, len(options[k])))
-            for other, pos in options[chosen]:
-                res = _resolve_pair(clause, chosen, info[other][0], pos)
-                if res is None or res in seen:
-                    continue
-                new_id = len(info) + 1
-                info[new_id] = (res, (cid, other), "resolusi")
-                seen[res] = new_id
-                generated += 1
-                if not res:
-                    empty_id = new_id
-                    break
-                heapq.heappush(heap, (len(res), new_id))
-
-        if empty_id is None:
-            return ProofResult(False, [], [], generated, saturated=not heap)
-        return self._extract_proof(info, empty_id, generated)
-
-    @staticmethod
-    def _extract_proof(info, empty_id, generated):
-        needed, stack = set(), [empty_id]
-        while stack:
-            cid = stack.pop()
-            if cid in needed:
-                continue
-            needed.add(cid)
-            stack.extend(info[cid][1])
-        number, lines, rules = {}, [], []
-        for cid in sorted(needed):
-            clause, parents, label = info[cid]
-            if label == "negasi goal":
-                number[cid] = len(number) + 1
-                lines.append(f"({number[cid]}) {format_clause(clause)}   [negasi goal]")
-            elif not parents:
-                if label not in rules and not label.startswith("fakta"):
-                    rules.append(label)
-
-        def describe(pid):
-            clause, parents, label = info[pid]
-            if pid in number:
-                return f"({number[pid]})"
-            if label.startswith("fakta"):
-                return f"fakta {format_clause(clause)}"
-            return label
-
-        for cid in sorted(needed):
-            clause, parents, label = info[cid]
-            if not parents:
-                continue
-            number[cid] = len(number) + 1
-            lines.append(f"({number[cid]}) {format_clause(clause)}   <- {describe(parents[0])} + {describe(parents[1])}")
-        return ProofResult(True, lines, rules, generated)
-
-    def ask(self, query):
-        """Return Answer. Dua pembuktian: query, lalu ~query."""
-        yes = self.entails(query)
-        if yes.proved:
-            return Answer("YA", yes, yes.generated)
-        no = self.entails(f"~({query})")
-        if no.proved:
-            return Answer("TIDAK", no, yes.generated + no.generated)
-        return Answer("TIDAK PASTI", no, yes.generated + no.generated,
-                      saturated=yes.saturated and no.saturated)
-
-
-# ---- penampung hasil inferensi untuk overlay -------------------------------
-class KbTrace:
-    """Judul + baris ber-gaya yang digambar overlay inferensi.
-    gaya: hdr | good | bad | warn | dim | normal"""
-
-    def __init__(self, title):
-        self.title = title
-        self.lines = []
-
-    def add(self, style, text):
-        self.lines.append((style, text))
-
-    def add_proof(self, proof, header="Bukti resolusi (negasikan goal, cari klausa kosong):"):
-        self.add("hdr", header)
-        for line in proof.lines:
-            self.add("normal", line)
-        if proof.rules_used:
-            self.add("dim", "Aturan KB dipakai: " + ", ".join(proof.rules_used) + f"  |  klausa dibangkitkan: {proof.generated}")
-
-
-KB_VERDICT_STYLE = {"YA": "good", "TIDAK": "bad", "TIDAK PASTI": "warn"}
 
 
 # =============================================================================
-# KB 1 -- PENASIHAT TANK (pusat komando)
-# =============================================================================
-# Tank menghubungi pusat komando lewat radio. Komando hanya punya fakta dari
-# radar-nya sendiri; tiap drone yang ada di jangkauan radar menghasilkan fakta
-# geometri (InRange / LineOfSight / Close) untuk sel yang ditanyakan.
-# K5 & K8 adalah aksioma "dunia tertutup 2 drone": sel baru dianggap tidak
-# terlihat / bebas kontak bila KEDUA drone terbukti Hidden / jauh. Jadi bila ada
-# drone di luar radar (tidak ada fakta tentangnya), jawabannya TIDAK PASTI
-# (not entailed) -- komando butuh informasi tambahan.
-COMMAND_RADAR_RADIUS = 9           # jangkauan radar komando (sel, Euclid dari tank)
-
-ADVISOR_RULES = [
-    ("K1", "InRange(c,d) & LineOfSight(c,d) => SeenBy(c,d)"),
-    ("K2", "~InRange(c,d) => Hidden(c,d)"),
-    ("K3", "~LineOfSight(c,d) => Hidden(c,d)"),
-    ("K4", "SeenBy(c,d) => Visible(c)"),
-    ("K5", "Hidden(c,DroneA) & Hidden(c,DroneB) => NotVisible(c)"),
-    ("K6", "NotVisible(c) => ~Visible(c)"),
-    ("K7", "Close(c,d) => Contact(c)"),
-    ("K8", "~Close(c,DroneA) & ~Close(c,DroneB) => NoContact(c)"),
-    ("K9", "Passable(c) & NotVisible(c) & NoContact(c) => Safe(c)"),
-    ("K10", "Visible(c) => ~Safe(c)"),
-    ("K11", "Contact(c) => ~Safe(c)"),
-    ("K12", "~Passable(c) => ~Safe(c)"),
-]
-ADVISOR_KB = KnowledgeBase(ADVISOR_RULES)
-DRONE_CONSTANTS = ("DroneA", "DroneB")
-ADVISOR_QUESTION = {"Safe": "aman", "Visible": "terlihat"}
-
-
-def cell_name(cell):
-    return f"R{cell[0]}C{cell[1]}"
-
-
-def advisor_ask(grid, drone_positions, vision_radius, radar_center, cell, query):
-    """Tanya komando: `query` ("Safe" | "Visible") untuk `cell`.
-
-    Args:
-        drone_positions: {"DroneA": (r,c), "DroneB": (r,c)}
-        radar_center: posisi tank (pusat jangkauan radar komando)
-    Returns: (Answer, KbTrace)"""
-    cname = cell_name(cell)
-    kb = ADVISOR_KB.copy()
-    facts = []
-
-    passable = not is_blocked(grid[cell[0]][cell[1]])
-    facts.append(f"Passable({cname})" if passable else f"~Passable({cname})")
-
-    radar_notes, missing = [], []
-    for drone in DRONE_CONSTANTS:
-        pos = drone_positions[drone]
-        if math.hypot(pos[0] - radar_center[0], pos[1] - radar_center[1]) > COMMAND_RADAR_RADIUS:
-            radar_notes.append(f"{drone} tak terdeteksi")
-            missing.append(drone)
-            continue
-        radar_notes.append(f"{drone} terdeteksi")
-        in_range = math.hypot(pos[0] - cell[0], pos[1] - cell[1]) <= vision_radius
-        los = has_line_of_sight(grid, pos, cell)
-        close = abs(pos[0] - cell[0]) + abs(pos[1] - cell[1]) <= BATTLE_TRIGGER_DISTANCE
-        for pred, value in (("InRange", in_range), ("LineOfSight", los), ("Close", close)):
-            facts.append(f"{'' if value else '~'}{pred}({cname},{drone})")
-    for fact in facts:
-        kb.tell(fact, label="fakta")
-
-    goal = f"{query}({cname})"
-    answer = kb.ask(goal)
-
-    trace = KbTrace(f"KOMANDO -- {cname} {ADVISOR_QUESTION[query]}?   [ASK {goal}]")
-    yes_text, no_text = {"Safe": ("aman dilewati", "tidak aman"),
-                         "Visible": ("terlihat drone", "tidak terlihat drone")}[query]
-    # Visible: terlihat = bahaya (merah), tidak terlihat = baik (hijau)
-    yes_style, no_style = ("bad", "good") if query == "Visible" else ("good", "bad")
-    if answer.verdict == "YA":
-        trace.add(yes_style, f"YA -- {cname} {yes_text}.")
-    elif answer.verdict == "TIDAK":
-        trace.add(no_style, f"TIDAK -- {cname} {no_text}.")
-    else:
-        trace.add("warn", "TIDAK PASTI -- data belum cukup untuk menjawab.")
-        if missing:
-            trace.add("warn", "Posisi " + ", ".join(missing) + " di luar radar.")
-    trace.add("dim", "Radar: " + " | ".join(radar_notes))
-    trace.add("dim", "Fakta: " + "; ".join(facts))
-    if answer.verdict == "TIDAK PASTI":
-        trace.add("dim", f"Tidak ada bukti ({answer.generated} klausa dicoba).")
-    else:
-        trace.add_proof(answer.proof, "Bukti (resolusi):")
-    return answer, trace
-
-
-# =============================================================================
-# KB 2 -- INTERAKSI NPC <-> NPC (drone saling berbagi kontak)
-# =============================================================================
-NPC_RULES = [
-    ("S1", "Ally(d,e) => Ally(e,d)"),
-    ("S2", "Spotted(d) & Ally(d,e) => Alerted(e)"),
-    ("S3", "Alerted(e) & ~Chasing(e) => Investigate(e)"),
-]
-NPC_KB = KnowledgeBase(NPC_RULES)
-
-
-def npc_share_ask(spotter, receiver, receiver_chasing):
-    """Apakah `receiver` harus menyelidiki karena `spotter` melihat tank?
-    Return (Answer, KbTrace)."""
-    kb = NPC_KB.copy()
-    kb.tell(f"Spotted({spotter})")
-    kb.tell(f"Ally({spotter},{receiver})")
-    kb.tell(f"{'' if receiver_chasing else '~'}Chasing({receiver})")
-    goal = f"Investigate({receiver})"
-    answer = kb.ask(goal)
-    trace = KbTrace(f"INTERAKSI NPC -- {spotter} -> {receiver}")
-    trace.add("dim", f"TELL: Spotted({spotter}), Ally({spotter},{receiver}), "
-                     f"{'' if receiver_chasing else '~'}Chasing({receiver})")
-    trace.add(KB_VERDICT_STYLE[answer.verdict], f"ASK({goal}) = {answer.verdict}")
-    if answer.verdict == "YA":
-        trace.add_proof(answer.proof)
-    return answer, trace
-
-
-# =============================================================================
-# KB 3 + PLANNER -- BANTUAN MUSUH BERBASIS ATURAN
-# =============================================================================
-# Percept (angka -> simbol proposisi) dihitung di CommandCenter.sense();
-# KB memutuskan APAKAH bantuan dikirim dan PERAN apa yang dibutuhkan; planner
-# STRIPS memutuskan LOADOUT mana dan urutan langkahnya, memperhitungkan stok.
-# Nilai di bawah dicari dengan simulasi (casual_policy / skilled_policy, 400 battle
-# tiap kombinasi) supaya bantuan berbasis aturan tetap masuk "pita nyaman" yang
-# sama dengan bantuan acak lama: casual menang 0.35-0.55, skilled 0.65-0.85,
-# bantuan muncul di 25-60% battle.
-COMMAND_GRACE_EXTRA = 4         # ronde tambahan di atas params.reinforce_after sebelum komando boleh memanggil bantuan
-REINFORCE_COOLDOWN = 5          # "Reinforced" bernilai true sekian ronde setelah bantuan tiba
-FORCE_WEAK_RATIO = 0.35         # HP drone hidup <= 35% dari total HP semua drone yang pernah muncul
-TANK_HEALTHY_RATIO = 0.5
-TANK_DAMAGED_RATIO = 0.4
-COMMAND_STOCK = {LOADOUT_BOM: 2, LOADOUT_MISIL: 3, LOADOUT_KAMIKAZE: 2}
-
-COMMAND_RULES = [
-    ("R1", "ForceWeak => Outnumbered"),
-    ("R2", "DroneLost & TankHealthy => Outnumbered"),
-    ("R3", "Outnumbered & ~Reinforced & GraceOver & SlotFree & QuotaLeft => CallReinforcement"),
-    # aksioma penutup: bantuan hanya dipanggil bila SEMUA syarat R3 terpenuhi
-    ("R3a", "CallReinforcement => Outnumbered"),
-    ("R3b", "CallReinforcement => ~Reinforced"),
-    ("R3c", "CallReinforcement => GraceOver"),
-    ("R3d", "CallReinforcement => SlotFree"),
-    ("R3e", "CallReinforcement => QuotaLeft"),
-    ("R1a", "Outnumbered => ForceWeak | DroneLost"),
-    ("R1b", "Outnumbered => ForceWeak | TankHealthy"),
-    # peran bantuan (eksklusif & lengkap atas TankDamaged, MisilAlive, ForceWeak)
-    ("R4", "TankDamaged & MisilAlive => NeedFinisher"),      # misil sudah menekan -> tuntaskan
-    ("R5", "TankDamaged & ~MisilAlive => NeedPressure"),     # tank rusak tapi tak ada penekan jarak jauh
-    ("R6", "~TankDamaged & ForceWeak => NeedDurable"),       # pasukan menipis -> butuh peredam
-    ("R7", "~TankDamaged & ~ForceWeak => NeedPressure"),
-]
-COMMAND_KB = KnowledgeBase(COMMAND_RULES)
-COMMAND_ROLES = (("NeedFinisher", "finisher"), ("NeedDurable", "durable"), ("NeedPressure", "pressure"))
-
-# biaya tiap loadout untuk memenuhi suatu peran (loadout "natural" = biaya 1)
-ROLE_COST = {
-    "finisher": {LOADOUT_KAMIKAZE: 1, LOADOUT_MISIL: 3, LOADOUT_BOM: 4},
-    "durable": {LOADOUT_BOM: 1, LOADOUT_MISIL: 2, LOADOUT_KAMIKAZE: 5},
-    "pressure": {LOADOUT_MISIL: 1, LOADOUT_BOM: 3, LOADOUT_KAMIKAZE: 5},
-}
-
-
-@dataclass(frozen=True)
-class StripsAction:
-    """Skema aksi ground: applicable bila pre <= s;  Result = (s - dele) | add."""
-    name: str
-    pre: frozenset
-    add: frozenset
-    dele: frozenset
-    cost: int
-
-
-def build_command_actions():
-    actions = [StripsAction("designate-target", frozenset({"spotter-alive"}),
-                            frozenset({"target-lock"}), frozenset(), 1)]
-    for role, costs in ROLE_COST.items():
-        for loadout, cost in costs.items():
-            pre = {f"stock-{loadout}"}
-            if role == "finisher":
-                pre.add("tank-damaged")
-                if loadout == LOADOUT_KAMIKAZE:
-                    pre.add("target-lock")      # kamikaze butuh penunjukan target dulu
-            actions.append(StripsAction(
-                f"deploy-{loadout}-as-{role}", frozenset(pre),
-                frozenset({f"{role}-on-station", f"deployed-{loadout}"}),
-                frozenset({f"stock-{loadout}"}), cost))
-    return actions
-
-
-COMMAND_ACTIONS = build_command_actions()
-
-
-@dataclass
-class PlanResult:
-    found: bool
-    plan: list
-    cost: float
-    expanded: int
-    h0: float
-    final_state: frozenset
-
-
-def relaxed_cost(state, goal, actions):
-    """Heuristik ignore-delete-lists (h-max): abaikan efek delete, hitung biaya
-    minimum tiap fakta bisa dicapai. Admissible -> A* tetap optimal."""
-    reach = {f: 0 for f in state}
-    changed = True
-    while changed:
-        changed = False
-        for act in actions:
-            if all(p in reach for p in act.pre):
-                base = max((reach[p] for p in act.pre), default=0) + act.cost
-                for fact in act.add:
-                    if base < reach.get(fact, math.inf):
-                        reach[fact] = base
-                        changed = True
-    return max((reach.get(g, math.inf) for g in goal), default=0)
-
-
-def plan_astar(initial, goal, actions, expansion_limit=2000):
-    """Forward state-space search (A*) pada state berupa himpunan fakta."""
-    initial, goal = frozenset(initial), frozenset(goal)
-    h0 = relaxed_cost(initial, goal, actions)
-    if h0 == math.inf:
-        return PlanResult(False, [], math.inf, 0, h0, initial)
-    tie = itertools.count()
-    frontier = [(h0, 0, next(tie), initial, ())]
-    best_g = {initial: 0}
-    expanded = 0
-    while frontier and expanded <= expansion_limit:
-        _, g, _, state, plan = heapq.heappop(frontier)
-        if g > best_g.get(state, math.inf):
-            continue
-        if goal <= state:
-            return PlanResult(True, list(plan), g, expanded, h0, state)
-        expanded += 1
-        for act in actions:
-            if not act.pre <= state:
-                continue
-            nxt = (state - act.dele) | act.add
-            g2 = g + act.cost
-            if g2 >= best_g.get(nxt, math.inf):
-                continue
-            h = relaxed_cost(nxt, goal, actions)
-            if h == math.inf:
-                continue
-            best_g[nxt] = g2
-            heapq.heappush(frontier, (g2 + h, g2, next(tie), nxt, plan + (act.name,)))
-    return PlanResult(False, [], math.inf, expanded, h0, initial)
-
-
-class CommandCenter:
-    """Pusat komando musuh: memutuskan bantuan drone lewat KB + planner.
-    Menggantikan peluang acak `reinforce_chance_pct` di mode game."""
-
-    def __init__(self):
-        self.stock = dict(COMMAND_STOCK)
-        self.last_reinforce_round = -10 ** 6
-        self.last_trace = None
-
-    def sense(self, enc):
-        """Abstraksi angka -> simbol proposisi (lapisan persepsi)."""
-        alive = enc.alive_drones()
-        pool = sum(d.loadout.max_hp for d in enc.drones)
-        weak = bool(pool) and sum(d.hp for d in alive) <= FORCE_WEAK_RATIO * pool
-        return {
-            "GraceOver": enc.round_no > enc.params.reinforce_after + COMMAND_GRACE_EXTRA,
-            "SlotFree": len(alive) < MAX_ACTIVE_DRONES,
-            "QuotaLeft": enc.reinforcement_count < MAX_REINFORCEMENTS and sum(self.stock.values()) > 0,
-            "Reinforced": enc.round_no - self.last_reinforce_round <= REINFORCE_COOLDOWN,
-            "ForceWeak": weak,
-            "DroneLost": any(not d.is_alive() for d in enc.drones),
-            "MisilAlive": any(d.loadout.key == LOADOUT_MISIL for d in alive),
-            "TankHealthy": enc.tank_hp >= TANK_HEALTHY_RATIO * enc.tank_max_hp,
-            "TankDamaged": enc.tank_hp <= TANK_DAMAGED_RATIO * enc.tank_max_hp,
-        }
-
-    def decide(self, enc):
-        """Return (loadout_key | None, baris_log). Menyimpan KbTrace terakhir."""
-        percepts = self.sense(enc)
-        kb = COMMAND_KB.copy()
-        for name, value in percepts.items():
-            kb.tell(name if value else f"~{name}", label="fakta")
-
-        trace = KbTrace(f"KOMANDO -- evaluasi bantuan, giliran {enc.round_no}")
-        trace.add("dim", "Persepsi: " + "  ".join(f"{k}={'T' if v else 'F'}" for k, v in percepts.items()))
-        answer = kb.ask("CallReinforcement")
-        trace.add(KB_VERDICT_STYLE[answer.verdict] if answer.verdict != "TIDAK" else "warn",
-                  f"ASK(CallReinforcement) = {answer.verdict}"
-                  + ("  -> kirim bantuan" if answer.verdict == "YA" else "  -> tidak ada bantuan ronde ini"))
-        trace.add_proof(answer.proof)
-        self.last_trace = trace
-        if answer.verdict != "YA":
-            return None, []
-
-        role = "pressure"
-        for symbol, name in COMMAND_ROLES:
-            role_answer = kb.ask(symbol)
-            if role_answer.verdict == "YA":
-                role = name
-                trace.add("good", f"ASK({symbol}) = YA  -> peran bantuan: {role}")
-                trace.add_proof(role_answer.proof, f"Bukti {symbol}:")
-                break
-
-        init = {f"stock-{k}" for k, v in self.stock.items() if v > 0} | {"spotter-alive"}
-        if percepts["TankDamaged"]:
-            init.add("tank-damaged")
-        goal = {f"{role}-on-station"}
-        result = plan_astar(init, goal, COMMAND_ACTIONS)
-        trace.add("hdr", "Planner STRIPS (A* maju, heuristik ignore-delete-lists):")
-        trace.add("dim", f"Init: {{{', '.join(sorted(init))}}}")
-        trace.add("dim", f"Goal: {{{', '.join(sorted(goal))}}}   h0={result.h0:g}")
-        if not result.found:
-            trace.add("bad", f"Tidak ada rencana ({result.expanded} state diekspansi) -- bantuan dibatalkan.")
-            return None, ["Komando: tidak ada stok untuk memenuhi peran bantuan."]
-        for step, name in enumerate(result.plan, 1):
-            trace.add("normal", f"  {step}. {name}")
-        deployed = next(f.split("-", 1)[1] for f in result.final_state if f.startswith("deployed-"))
-        self.stock[deployed] -= 1
-        self.last_reinforce_round = enc.round_no
-        trace.add("good", f"Biaya rencana {result.cost:g}, {result.expanded} state diekspansi -> kirim drone {deployed}")
-        trace.add("dim", "Sisa stok komando: " + ", ".join(f"{k}={v}" for k, v in self.stock.items()))
-        return deployed, [f"Komando: peran {role}, {len(result.plan)} langkah"]
-
-
-# =============================================================================
-# OVERLAY INFERENSI (dipakai mode eksplorasi & tab Komando di battle)
-# =============================================================================
-OVERLAY_LINE_H = 14
-OVERLAY_COLORS = {
-    "hdr": (200, 230, 140), "good": (150, 220, 120), "bad": (226, 100, 90),
-    "warn": (240, 170, 80), "dim": (160, 182, 128), "normal": (220, 234, 196),
-}
-
-
-def overlay_wrapped_lines(trace, font, width):
-    rows = []
-    width -= font.size("     ")[0]      # sisakan ruang untuk indentasi baris lanjutan
-    for style, text in trace.lines:
-        parts = wrap_text(text, font, width)
-        for idx, part in enumerate(parts or [""]):
-            rows.append((style, ("     " if idx else "") + part))
-    return rows
-
-
-_OVERLAY_VEILS = {}     # ukuran -> surface selubung transparan (dibuat sekali)
-
-
-def draw_kb_overlay(screen, fonts, trace, rect, scroll, translucent=True, with_close=True):
-    """Gambar panel inferensi di `rect`. Return (close_rect | None, max_scroll)."""
-    font_small = fonts.get("overlay", fonts["small"])
-    font_bold = fonts.get("overlay_bold", fonts["ui_bold"])
-    line_h = max(OVERLAY_LINE_H, font_small.get_linesize() + 1)
-    if translucent:
-        veil = _OVERLAY_VEILS.get(rect.size)
-        if veil is None:
-            veil = _OVERLAY_VEILS[rect.size] = pygame.Surface(rect.size, pygame.SRCALPHA)
-            veil.fill((12, 20, 10, 238))
-        screen.blit(veil, rect.topleft)
-    else:
-        pygame.draw.rect(screen, (20, 29, 17), rect, border_radius=6)
-    pygame.draw.rect(screen, COLORS["accent"], rect, width=2, border_radius=6)
-
-    screen.blit(font_bold.render(trace.title, True, COLORS["accent_hover"]), (rect.x + 10, rect.y + 7))
-    close_rect = None
-    if with_close:
-        close_rect = pygame.Rect(rect.right - 84, rect.y + 5, 76, 24)
-        pygame.draw.rect(screen, (70, 40, 36), close_rect, border_radius=5)
-        label = font_small.render("Tutup X", True, COLORS["text_cream"])
-        screen.blit(label, label.get_rect(center=close_rect.center))
-
-    rows = overlay_wrapped_lines(trace, font_small, rect.w - 28)
-    top = rect.y + 10 + font_bold.get_linesize() + 6
-    visible = max(1, (rect.bottom - 8 - top) // line_h)
-    if len(rows) > visible:     # sisakan satu baris di bawah untuk petunjuk gulir
-        visible = max(1, visible - 1)
-    max_scroll = max(0, len(rows) - visible)
-    scroll = max(0, min(scroll, max_scroll))
-    for i, (style, text) in enumerate(rows[scroll:scroll + visible]):
-        screen.blit(font_small.render(text, True, OVERLAY_COLORS[style]), (rect.x + 12, top + i * line_h))
-    if max_scroll:
-        hint = font_small.render(f"gulir: roda mouse ({scroll + 1}-{min(len(rows), scroll + visible)}/{len(rows)})",
-                                 True, COLORS["text_dim"])
-        screen.blit(hint, (rect.right - 12 - hint.get_width(), rect.bottom - 6 - line_h))
-    return close_rect, max_scroll
-
-
-# =============================================================================
-# BAGIAN 5B.3 -- ENCOUNTER: TANK MELAWAN BANYAK DRONE + BANTUAN MUSUH
+# BAGIAN 8.3 -- ENCOUNTER: TANK MELAWAN BANYAK DRONE + BANTUAN MUSUH
 # =============================================================================
 # Model murni (tanpa pygame) supaya bisa dipakai game DAN simulasi tuning.
 # Tiap drone memilih aksi lewat duel 1-lawan-1 (BattleState) melawan tank,
@@ -2443,8 +1735,11 @@ class Encounter:
         return f"#{drone.drone_id} {drone.loadout.name}: {label} (HP tank {max(0, self.tank_hp):.0f})"
 
 
+# #############################################################################
+# MODUL balance.py
+# #############################################################################
 # =============================================================================
-# BAGIAN 5B.4 -- LOCAL SEARCH UNTUK KESEIMBANGAN (tidak terlalu mudah/sulit)
+# BAGIAN 9 -- LOCAL SEARCH UNTUK KESEIMBANGAN (tidak terlalu mudah/sulit)
 # =============================================================================
 # Ruang pencarian: vektor BalanceParams. Fungsi objektif (loss) mengukur seberapa
 # jauh hasil simulasi dari "pita nyaman": pemain biasa menang cukup sering
@@ -2735,10 +2030,13 @@ def run_tuning_cli(args):
     print("\nSalin ke TUNED_PARAMS:\n  TUNED_PARAMS = " + repr(best))
 
 
+# #############################################################################
+# MODUL npc_local_search.py
+# #############################################################################
 # =============================================================================
-# BAGIAN 5B.5 -- LOCAL SEARCH NPC (HILL CLIMBING & SIMULATED ANNEALING)
+# BAGIAN 10 -- LOCAL SEARCH NPC (HILL CLIMBING & SIMULATED ANNEALING)
 # =============================================================================
-# Beda dengan local search keseimbangan (BAGIAN 5B.4) yang menyetel angka
+# Beda dengan local search keseimbangan (BAGIAN 9, balance.py) yang menyetel angka
 # permainan secara offline, di sini local search dipakai SAAT BERTEMPUR untuk
 # memilih aksi drone. Ruang pencariannya adalah sebuah RENCANA: satu jenis
 # aksi (ATTACK / DEFEND / REPAIR) untuk tiap ronde selama `horizon` ronde.
@@ -2955,6 +2253,2051 @@ class LocalSearchAgent:
         return legalize_npc_action(state, self.best_plan[0])
 
 
+# #############################################################################
+# MODUL kb.py
+# #############################################################################
+# =============================================================================
+# BAGIAN 12 -- KNOWLEDGE BASE & RESOLUSI (FOL)
+# =============================================================================
+MAX_CLAUSE_LITERALS = 5        # pengaman: resolvent lebih panjang dibuang
+MAX_GENERATED_CLAUSES = 1500   # pengaman: batas klausa baru per pembuktian
+MAX_TRACE_STEPS = 10           # langkah pencarian yang dicatat untuk pembuktian yang gagal
+
+_TOKEN_RE = re.compile(r"\s*(<=>|=>|[()~&|,]|[A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _is_var(term):
+    return term[0].islower()
+
+
+# ---- 12.1 parser teks -> pohon formula ---------------------------------------
+def _tokenize(text):
+    tokens, pos, text = [], 0, text.strip()
+    while pos < len(text):
+        match = _TOKEN_RE.match(text, pos)
+        if not match:
+            raise ValueError(f"Sintaks KB tidak dikenal di: '{text[pos:]}'")
+        tokens.append(match.group(1))
+        pos = match.end()
+    return tokens
+
+
+class _FormulaParser:
+    """Presedensi (kuat -> lemah): ~  &  |  =>  <=>"""
+
+    def __init__(self, text):
+        self.tokens = _tokenize(text)
+        self.i = 0
+
+    def _peek(self):
+        return self.tokens[self.i] if self.i < len(self.tokens) else None
+
+    def _take(self, expected=None):
+        tok = self._peek()
+        if tok is None or (expected is not None and tok != expected):
+            raise ValueError(f"Sintaks KB: diharapkan '{expected}', dapat '{tok}'")
+        self.i += 1
+        return tok
+
+    def parse(self):
+        node = self._iff()
+        if self._peek() is not None:
+            raise ValueError(f"Sintaks KB: sisa token '{self._peek()}'")
+        return node
+
+    def _iff(self):
+        left = self._imp()
+        while self._peek() == "<=>":
+            self._take()
+            left = ("iff", left, self._imp())
+        return left
+
+    def _imp(self):
+        left = self._or()
+        if self._peek() == "=>":
+            self._take()
+            return ("imp", left, self._imp())
+        return left
+
+    def _or(self):
+        left = self._and()
+        while self._peek() == "|":
+            self._take()
+            left = ("or", left, self._and())
+        return left
+
+    def _and(self):
+        left = self._unary()
+        while self._peek() == "&":
+            self._take()
+            left = ("and", left, self._unary())
+        return left
+
+    def _unary(self):
+        if self._peek() == "~":
+            self._take()
+            return ("not", self._unary())
+        if self._peek() == "(":
+            self._take()
+            node = self._iff()
+            self._take(")")
+            return node
+        return self._atom()
+
+    def _atom(self):
+        name = self._take()
+        if not re.match(r"[A-Za-z_]", name):
+            raise ValueError(f"Sintaks KB: diharapkan nama predikat, dapat '{name}'")
+        args = []
+        if self._peek() == "(":
+            self._take()
+            args.append(self._take())
+            while self._peek() == ",":
+                self._take()
+                args.append(self._take())
+            self._take(")")
+        return ("atom", name, tuple(args))
+
+
+# ---- 12.2 konversi ke CNF (4 langkah di slide) --------------------------------
+def _eliminate_arrows(node):
+    """Langkah 1-2: buang <=> lalu =>  (a => b  menjadi  ~a | b)."""
+    kind = node[0]
+    if kind == "atom":
+        return node
+    if kind == "not":
+        return ("not", _eliminate_arrows(node[1]))
+    if kind in ("and", "or"):
+        return (kind, _eliminate_arrows(node[1]), _eliminate_arrows(node[2]))
+    a, b = _eliminate_arrows(node[1]), _eliminate_arrows(node[2])
+    if kind == "imp":
+        return ("or", ("not", a), b)
+    return ("and", ("or", ("not", a), b), ("or", ("not", b), a))   # iff
+
+
+def _push_negation(node, negated=False):
+    """Langkah 3: De Morgan & negasi ganda -> negasi hanya menempel di atom."""
+    kind = node[0]
+    if kind == "atom":
+        return ("lit", negated, node[1], node[2])
+    if kind == "not":
+        return _push_negation(node[1], not negated)
+    left, right = _push_negation(node[1], negated), _push_negation(node[2], negated)
+    if kind == "and":
+        return ("or" if negated else "and", left, right)
+    return ("and" if negated else "or", left, right)
+
+
+def _distribute(node):
+    """Langkah 4: distribusikan | atas &  -> daftar klausa (daftar literal)."""
+    if node[0] == "lit":
+        return [[(node[1], node[2], node[3])]]
+    left, right = _distribute(node[1]), _distribute(node[2])
+    if node[0] == "and":
+        return left + right
+    return [l + r for l in left for r in right]
+
+
+def _canonical(literals):
+    """Klausa kanonik: tanpa duplikat, variabel diberi nama v1,v2,... urut
+    kemunculan. Return None bila tautologi (P | ~P), () bila klausa kosong."""
+    unique = set(literals)
+    for neg, pred, args in unique:
+        if (not neg, pred, args) in unique:
+            return None
+    ordered = sorted(unique, key=lambda l: (l[1], l[0], tuple("_" if _is_var(x) else x for x in l[2])))
+    naming, result = {}, []
+    for neg, pred, args in ordered:
+        renamed = []
+        for term in args:
+            if _is_var(term):
+                naming.setdefault(term, f"v{len(naming) + 1}")
+                renamed.append(naming[term])
+            else:
+                renamed.append(term)
+        result.append((neg, pred, tuple(renamed)))
+    return tuple(dict.fromkeys(result))
+
+
+def formula_to_clauses(text):
+    """Teks formula -> daftar klausa CNF (tuple literal), tautologi dibuang."""
+    tree = _FormulaParser(text).parse()
+    clauses = []
+    for lits in _distribute(_push_negation(_eliminate_arrows(tree))):
+        clause = _canonical(lits)
+        if clause is not None:
+            clauses.append(clause)
+    return clauses
+
+
+# ---- 12.3 unifikasi & resolusi ------------------------------------------------
+def _walk(term, subst):
+    while _is_var(term) and term in subst:
+        term = subst[term]
+    return term
+
+
+def _unify(args_a, args_b):
+    subst = {}
+    for x, y in zip(args_a, args_b):
+        x, y = _walk(x, subst), _walk(y, subst)
+        if x == y:
+            continue
+        if _is_var(x):
+            subst[x] = y
+        elif _is_var(y):
+            subst[y] = x
+        else:
+            return None
+    return subst
+
+
+def _rename_apart(clause):
+    return tuple((n, p, tuple(f"{t}_2" if _is_var(t) else t for t in a)) for n, p, a in clause)
+
+
+def _resolve_pair(c1, i, c2, j):
+    """Resolvent dari literal ke-i di c1 dan literal ke-j di c2 (c2 di-rename
+    dulu). Return klausa kanonik, None bila tak bisa diunifikasi / tautologi /
+    terlalu panjang. Kompleksitas O(|c1| + |c2|)."""
+    c2 = _rename_apart(c2)
+    (n1, p1, a1), (n2, p2, a2) = c1[i], c2[j]
+    if p1 != p2 or n1 == n2 or len(a1) != len(a2):
+        return None
+    subst = _unify(a1, a2)
+    if subst is None:
+        return None
+    rest = [(n, p, tuple(_walk(t, subst) for t in a)) for k, (n, p, a) in enumerate(c1) if k != i]
+    rest += [(n, p, tuple(_walk(t, subst) for t in a)) for k, (n, p, a) in enumerate(c2) if k != j]
+    merged = _canonical(rest)
+    if merged is not None and len(merged) <= MAX_CLAUSE_LITERALS:
+        return merged
+    return None
+
+
+def format_literal(lit):
+    neg, pred, args = lit
+    return ("~" if neg else "") + pred + (f"({','.join(args)})" if args else "")
+
+
+def format_clause(clause):
+    return "[] (klausa kosong)" if not clause else " | ".join(format_literal(l) for l in clause)
+
+
+@dataclass
+class ProofResult:
+    proved: bool
+    lines: list            # baris bukti siap tampil
+    rules_used: list       # label aturan KB yang dipakai
+    generated: int         # jumlah klausa baru yang dibangkitkan
+    saturated: bool = False   # True: semua resolvent habis (bukan kena batas) tanpa klausa kosong
+    goal: str = ""            # kalimat yang coba dibuktikan
+    negated: list = field(default_factory=list)   # klausa negasi goal
+    steps: list = field(default_factory=list)     # cuplikan langkah pencarian (untuk yang gagal)
+
+
+@dataclass
+class Answer:
+    verdict: str           # "YA" | "TIDAK" | "TIDAK PASTI"
+    proof: ProofResult     # bukti untuk verdict (atau percobaan terakhir bila tidak pasti)
+    generated: int
+    saturated: bool = False   # untuk TIDAK PASTI: kedua pembuktian benar-benar jenuh
+    attempts: list = field(default_factory=list)  # semua ProofResult yang dicoba (q lalu ~q)
+
+
+class KnowledgeBase:
+    """Kumpulan klausa CNF + mesin resolution refutation.
+
+    tell(): tambah fakta/kalimat.  ask(): jawab YA (KB |= q), TIDAK (KB |= ~q),
+    atau TIDAK PASTI (keduanya tidak terbukti -> butuh informasi tambahan)."""
+
+    def __init__(self, rules=(), name="KB", source="kode"):
+        self.name = name
+        self.source = source
+        self.rules = list(rules)   # [(label, teks)] untuk ditampilkan
+        self.clauses = []          # [(label, clause)]
+        for label, text in self.rules:
+            for clause in formula_to_clauses(text):
+                self.clauses.append((label, clause))
+        self.rule_clause_count = len(self.clauses)
+
+    def copy(self):
+        clone = KnowledgeBase(name=self.name, source=self.source)
+        clone.rules = self.rules
+        clone.clauses = list(self.clauses)
+        clone.rule_clause_count = self.rule_clause_count
+        return clone
+
+    def tell(self, text, label="fakta"):
+        for clause in formula_to_clauses(text):
+            self.clauses.append((label, clause))
+
+    def entails(self, text):
+        """KB |= text ?  Resolution refutation dengan strategi set-of-support
+        (hanya turunan dari negasi goal yang dikembangkan), input resolution
+        (turunan hanya di-resolve dengan klausa KB), satu literal terpilih per
+        klausa (seperti SLD), klausa terpendek lebih dulu.
+        Dengan konstanta berhingga & batas panjang, selalu berhenti."""
+        negated = formula_to_clauses(f"~({text})")
+        info, seen = {}, {}
+        usable = []
+        for label, clause in self.clauses:
+            cid = len(info) + 1
+            info[cid] = (clause, (), label)
+            seen.setdefault(clause, cid)
+            usable.append(cid)
+
+        # indeks (tanda, predikat) -> [(id klausa input, posisi literal)]
+        index = {}
+        for cid in usable:
+            for pos, (neg, pred, _) in enumerate(info[cid][0]):
+                index.setdefault((neg, pred), []).append((cid, pos))
+
+        heap = []
+        for clause in negated:
+            cid = len(info) + 1
+            info[cid] = (clause, (), "negasi goal")
+            seen.setdefault(clause, cid)
+            heapq.heappush(heap, (len(clause), cid))
+
+        generated, empty_id, steps = 0, None, []
+        while heap and generated < MAX_GENERATED_CLAUSES and empty_id is None:
+            _, cid = heapq.heappop(heap)
+            clause = info[cid][0]
+            # literal terpilih = yang kandidat lawannya paling sedikit (first-fail).
+            # Literal tanpa kandidat tidak mungkin dihabiskan -> klausa buntu, buang.
+            options = [index.get((not neg, pred), []) for neg, pred, _ in clause]
+            dead = next((k for k, cands in enumerate(options) if not cands), None)
+            if dead is not None:
+                if len(steps) < MAX_TRACE_STEPS:
+                    steps.append(f"{format_clause(clause)}  -> buntu: tidak ada klausa yang memuat "
+                                 f"lawan dari {format_literal(clause[dead])}")
+                continue
+
+            # literal yang cocok dengan sebuah fakta dihabiskan dulu (klausa tetap
+            # pendek), lalu yang kandidatnya paling sedikit
+            def fact_match(k):
+                return any(info[c][2].startswith("fakta") and _unify(clause[k][2], info[c][0][p][2]) is not None
+                           for c, p in options[k])
+            chosen = min(range(len(clause)), key=lambda k: (0 if fact_match(k) else 1, len(options[k])))
+            made = 0
+            for other, pos in options[chosen]:
+                res = _resolve_pair(clause, chosen, info[other][0], pos)
+                if res is None or res in seen:
+                    continue
+                new_id = len(info) + 1
+                info[new_id] = (res, (cid, other), "resolusi")
+                seen[res] = new_id
+                generated += 1
+                made += 1
+                if not res:
+                    empty_id = new_id
+                    break
+                heapq.heappush(heap, (len(res), new_id))
+            if len(steps) < MAX_TRACE_STEPS:
+                steps.append(f"{format_clause(clause)}  -> resolusi pada {format_literal(clause[chosen])}: "
+                             f"{made} resolvent baru")
+
+        if empty_id is None:
+            return ProofResult(False, [], [], generated, saturated=not heap, goal=text,
+                               negated=negated, steps=steps)
+        result = self._extract_proof(info, empty_id, generated)
+        result.goal, result.negated = text, negated
+        return result
+
+    @staticmethod
+    def _extract_proof(info, empty_id, generated):
+        needed, stack = set(), [empty_id]
+        while stack:
+            cid = stack.pop()
+            if cid in needed:
+                continue
+            needed.add(cid)
+            stack.extend(info[cid][1])
+        number, lines, rules = {}, [], []
+        for cid in sorted(needed):
+            clause, parents, label = info[cid]
+            if label == "negasi goal":
+                number[cid] = len(number) + 1
+                lines.append(f"({number[cid]}) {format_clause(clause)}   [negasi goal]")
+            elif not parents:
+                if label not in rules and not label.startswith("fakta"):
+                    rules.append(label)
+
+        def describe(pid):
+            clause, parents, label = info[pid]
+            if pid in number:
+                return f"({number[pid]})"
+            if label.startswith("fakta"):
+                return f"fakta {format_clause(clause)}"
+            return f"{label} [{format_clause(clause)}]"
+
+        for cid in sorted(needed):
+            clause, parents, label = info[cid]
+            if not parents:
+                continue
+            number[cid] = len(number) + 1
+            lines.append(f"({number[cid]}) {format_clause(clause)}   <- {describe(parents[0])} + {describe(parents[1])}")
+        return ProofResult(True, lines, rules, generated)
+
+    def ask(self, query):
+        """Return Answer. Dua pembuktian: query, lalu ~query."""
+        yes = self.entails(query)
+        if yes.proved:
+            return Answer("YA", yes, yes.generated, attempts=[yes])
+        no = self.entails(f"~({query})")
+        if no.proved:
+            return Answer("TIDAK", no, yes.generated + no.generated, attempts=[yes, no])
+        return Answer("TIDAK PASTI", no, yes.generated + no.generated,
+                      saturated=yes.saturated and no.saturated, attempts=[yes, no])
+
+
+# ---- 12.4 penampung hasil inferensi untuk overlay -----------------------------
+KB_VERDICT_STYLE = {"YA": "good", "TIDAK": "bad", "TIDAK PASTI": "warn"}
+
+
+class KbTrace:
+    """Judul + baris ber-gaya yang digambar overlay inferensi.
+    gaya: hdr | good | bad | warn | dim | normal"""
+
+    def __init__(self, title):
+        self.title = title
+        self.lines = []
+
+    def add(self, style, text):
+        self.lines.append((style, text))
+
+    def add_proof(self, proof, header="Bukti resolusi (negasikan goal, cari klausa kosong):"):
+        self.add("hdr", header)
+        for line in proof.lines:
+            self.add("normal", line)
+        if proof.rules_used:
+            self.add("dim", "Aturan KB dipakai: " + ", ".join(proof.rules_used) + f"  |  klausa dibangkitkan: {proof.generated}")
+
+    def add_kb(self, kb, step="1."):
+        """Daftar aturan KB beserta jumlah klausa CNF-nya."""
+        self.add("hdr", f"{step} KB {kb.name}: {len(kb.rules)} aturan -> {kb.rule_clause_count} klausa CNF "
+                        f"(sumber: {kb.source})")
+        for label, text in kb.rules:
+            self.add("dim", f"   {label}: {text}")
+
+    def add_attempt(self, proof, tag):
+        """Satu percobaan resolution refutation, berhasil maupun gagal."""
+        self.add("hdr", f"   [{tag}] buktikan KB |= {proof.goal}")
+        self.add("dim", "      negasi goal: " + "; ".join(format_clause(c) for c in proof.negated))
+        if proof.proved:
+            for line in proof.lines:
+                self.add("normal", "      " + line)
+            rules = ", ".join(proof.rules_used) or "(hanya fakta)"
+            self.add("good", f"      klausa kosong ditemukan -> terbukti.  Aturan: {rules}  |  "
+                             f"{proof.generated} klausa dibangkitkan")
+            return
+        for line in proof.steps:
+            self.add("dim", "      " + line)
+        why = ("jenuh: semua resolvent sudah dicoba" if proof.saturated
+               else f"berhenti di batas {MAX_GENERATED_CLAUSES} klausa")
+        self.add("warn", f"      tidak ada klausa kosong ({proof.generated} klausa dibangkitkan, {why}) -> tidak terbukti")
+
+    def add_inference(self, kb, facts, goal, answer, show_rules=True):
+        """Proses inferensi lengkap: KB -> TELL -> ASK (kedua percobaan) -> kesimpulan."""
+        step = 1
+        if show_rules:
+            self.add_kb(kb, f"{step}.")
+            step += 1
+        self.add("hdr", f"{step}. TELL {len(facts)} fakta persepsi:")
+        self.add("normal", "   " + "; ".join(facts))
+        step += 1
+        self.add("hdr", f"{step}. ASK {goal}  (resolution refutation, set-of-support)")
+        for proof, tag in zip(answer.attempts, ("a", "b")):
+            self.add_attempt(proof, tag)
+        step += 1
+        meaning = {"YA": f"KB |= {goal}", "TIDAK": f"KB |= ~{goal}",
+                   "TIDAK PASTI": f"KB tidak memuat {goal} maupun ~{goal} -> butuh informasi tambahan"}
+        self.add(KB_VERDICT_STYLE[answer.verdict], f"{step}. Kesimpulan: {answer.verdict}  ({meaning[answer.verdict]})")
+
+
+# =============================================================================
+# BAGIAN 12.5 -- PEMUAT ATURAN (kb_rules.txt + fallback di kode)
+# =============================================================================
+RULES_FILE = Path(__file__).with_name("kb_rules.txt")
+
+# Fallback bila kb_rules.txt hilang / salah sintaks. Isinya sama dengan file.
+DEFAULT_RULES = {
+    "ADVISOR": [
+        ("K1", "InRange(c,d) & LineOfSight(c,d) => SeenBy(c,d)"),
+        ("K2", "~InRange(c,d) => Hidden(c,d)"),
+        ("K3", "~LineOfSight(c,d) => Hidden(c,d)"),
+        ("K4", "SeenBy(c,d) => Visible(c)"),
+        ("K5", "FirstDrone(d) & Hidden(c,d) => HiddenUpTo(c,d)"),
+        ("K6", "HiddenUpTo(c,d) & NextDrone(d,e) & Hidden(c,e) => HiddenUpTo(c,e)"),
+        ("K7", "HiddenUpTo(c,d) & LastDrone(d) => NotVisible(c)"),
+        ("K8", "NotVisible(c) => ~Visible(c)"),
+        ("K9", "Close(c,d) => Contact(c)"),
+        ("K10", "FirstDrone(d) & ~Close(c,d) => FarUpTo(c,d)"),
+        ("K11", "FarUpTo(c,d) & NextDrone(d,e) & ~Close(c,e) => FarUpTo(c,e)"),
+        ("K12", "FarUpTo(c,d) & LastDrone(d) => NoContact(c)"),
+        ("K13", "Passable(c) & NotVisible(c) & NoContact(c) => Safe(c)"),
+        ("K14", "Visible(c) => ~Safe(c)"),
+        ("K15", "Contact(c) => ~Safe(c)"),
+        ("K16", "~Passable(c) => ~Safe(c)"),
+    ],
+    "NPC": [
+        ("S1", "Ally(d,e) => Ally(e,d)"),
+        ("S2", "Spotted(d) & Ally(d,e) => Alerted(e)"),
+        ("S3", "Alerted(e) & ~Chasing(e) => Investigate(e)"),
+    ],
+    "COMMAND": [
+        ("R1", "Outnumbered <=> ForceWeak | (DroneLost & TankHealthy)"),
+        ("R2", "Busy <=> Reinforced | EnRoute"),
+        ("R3", "CallReinforcement <=> Outnumbered & ~Busy & GraceOver & SlotFree & QuotaLeft"),
+        ("R4", "TankDamaged & MisilAlive => NeedFinisher"),
+        ("R5", "TankDamaged & ~MisilAlive => NeedPressure"),
+        ("R6", "~TankDamaged & ForceWeak => NeedDurable"),
+        ("R7", "~TankDamaged & ~ForceWeak => NeedPressure"),
+    ],
+}
+
+_SECTION_RE = re.compile(r"^\[([A-Za-z_]\w*)\]$")
+_RULE_RE = re.compile(r"^([A-Za-z]\w*)\s*:\s*(.+)$")
+
+
+def parse_rules_text(text):
+    """Teks kb_rules.txt -> ({nama_kb: [(label, formula)]}, {nama_kb: pesan_error}).
+
+    Tiap formula langsung dicoba dikonversi ke CNF, sehingga salah sintaks
+    ketahuan saat program mulai (bukan di tengah permainan)."""
+    sections, errors, current = {}, {}, None
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        header = _SECTION_RE.match(line)
+        if header:
+            current = header.group(1).upper()
+            sections.setdefault(current, [])
+            continue
+        rule = _RULE_RE.match(line)
+        if current is None or rule is None:
+            errors.setdefault(current or "?", f"baris {lineno}: format bukan 'LABEL: formula'")
+            continue
+        label, formula = rule.group(1), rule.group(2).strip()
+        try:
+            formula_to_clauses(formula)
+        except ValueError as exc:
+            errors.setdefault(current, f"baris {lineno} ({label}): {exc}")
+            continue
+        sections[current].append((label, formula))
+    return sections, errors
+
+
+def load_rule_sets(path=RULES_FILE):
+    """Return {nama_kb: (aturan, keterangan_sumber)}. Bagian yang hilang/salah
+    memakai DEFAULT_RULES; keterangan sumbernya menjelaskan alasannya."""
+    try:
+        sections, errors = parse_rules_text(Path(path).read_text(encoding="utf-8"))
+        missing_file = None
+    except OSError:
+        sections, errors, missing_file = {}, {}, f"{Path(path).name} tidak ditemukan"
+    result = {}
+    for name, defaults in DEFAULT_RULES.items():
+        if missing_file:
+            result[name] = (defaults, f"bawaan kode ({missing_file})")
+        elif name in errors:
+            result[name] = (defaults, f"bawaan kode ({Path(path).name} [{name}] {errors[name]})")
+        elif not sections.get(name):
+            result[name] = (defaults, f"bawaan kode (bagian [{name}] kosong/tidak ada)")
+        else:
+            result[name] = (sections[name], Path(path).name)
+    return result
+
+
+RULE_SETS = load_rule_sets()
+
+
+def build_kb(name):
+    rules, source = RULE_SETS[name]
+    return KnowledgeBase(rules, name=name, source=source)
+
+
+# =============================================================================
+# BAGIAN 12.6 -- KB 1: PENASIHAT TANK (pusat komando sekutu)
+# =============================================================================
+# Tank menghubungi pusat komando lewat radio. Komando hanya punya fakta dari
+# radar-nya sendiri; tiap drone yang ada di jangkauan radar menghasilkan fakta
+# geometri (InRange / LineOfSight / Close) untuk sel yang ditanyakan. Roster
+# drone (FirstDrone / NextDrone / LastDrone) berasal dari intel: komando tahu
+# BERAPA drone musuh yang ada, tetapi posisinya hanya bila terdeteksi radar.
+# Jadi drone di luar radar membuat jawabannya TIDAK PASTI (not entailed).
+COMMAND_RADAR_RADIUS = 9           # jangkauan radar komando (sel, Euclid dari tank)
+
+ADVISOR_KB = build_kb("ADVISOR")
+ADVISOR_QUESTION = {"Safe": "aman", "Visible": "terlihat"}
+
+
+def cell_name(cell):
+    return f"R{cell[0]}C{cell[1]}"
+
+
+def roster_facts(names):
+    """Fakta urutan roster drone: FirstDrone, NextDrone, LastDrone."""
+    names = list(names)
+    if not names:
+        return []
+    facts = [f"FirstDrone({names[0]})", f"LastDrone({names[-1]})"]
+    facts += [f"NextDrone({a},{b})" for a, b in zip(names, names[1:])]
+    return facts
+
+
+def advisor_ask(grid, drone_positions, vision_radius, radar_center, cell, query):
+    """Tanya komando: `query` ("Safe" | "Visible") untuk `cell`.
+
+    Args:
+        drone_positions: {"DroneA": (r,c), "DroneB": (r,c), ...} -- jumlah drone bebas
+        radar_center: posisi tank (pusat jangkauan radar komando)
+    Returns: (Answer, KbTrace)"""
+    cname = cell_name(cell)
+    kb = ADVISOR_KB.copy()
+    facts = []
+
+    passable = not is_blocked(grid[cell[0]][cell[1]])
+    facts.append(f"Passable({cname})" if passable else f"~Passable({cname})")
+    facts += roster_facts(drone_positions)
+
+    radar_notes, missing = [], []
+    for drone, pos in drone_positions.items():
+        if math.hypot(pos[0] - radar_center[0], pos[1] - radar_center[1]) > COMMAND_RADAR_RADIUS:
+            radar_notes.append(f"{drone} tak terdeteksi")
+            missing.append(drone)
+            continue
+        radar_notes.append(f"{drone} terdeteksi di {cell_name(pos)}")
+        in_range = math.hypot(pos[0] - cell[0], pos[1] - cell[1]) <= vision_radius
+        los = has_line_of_sight(grid, pos, cell)
+        close = abs(pos[0] - cell[0]) + abs(pos[1] - cell[1]) <= BATTLE_TRIGGER_DISTANCE
+        for pred, value in (("InRange", in_range), ("LineOfSight", los), ("Close", close)):
+            facts.append(f"{'' if value else '~'}{pred}({cname},{drone})")
+    for fact in facts:
+        kb.tell(fact, label="fakta")
+
+    goal = f"{query}({cname})"
+    answer = kb.ask(goal)
+
+    trace = KbTrace(f"KOMANDO -- {cname} {ADVISOR_QUESTION[query]}?   [ASK {goal}]")
+    yes_text, no_text = {"Safe": ("aman dilewati", "tidak aman"),
+                         "Visible": ("terlihat drone", "tidak terlihat drone")}[query]
+    # Visible: terlihat = bahaya (merah), tidak terlihat = baik (hijau)
+    yes_style, no_style = ("bad", "good") if query == "Visible" else ("good", "bad")
+    if answer.verdict == "YA":
+        trace.add(yes_style, f"YA -- {cname} {yes_text}.")
+    elif answer.verdict == "TIDAK":
+        trace.add(no_style, f"TIDAK -- {cname} {no_text}.")
+    else:
+        trace.add("warn", "TIDAK PASTI -- data belum cukup untuk menjawab.")
+        if missing:
+            trace.add("warn", "Posisi " + ", ".join(missing) + " di luar radar.")
+    trace.add("dim", "Radar: " + " | ".join(radar_notes))
+    trace.add_inference(kb, facts, goal, answer)
+    return answer, trace
+
+
+# =============================================================================
+# BAGIAN 12.7 -- KB 2: INTERAKSI NPC <-> NPC (drone saling berbagi kontak)
+# =============================================================================
+NPC_KB = build_kb("NPC")
+
+
+def npc_share_ask(spotter, receiver, receiver_chasing):
+    """Apakah `receiver` harus menyelidiki karena `spotter` melihat tank?
+    Return (Answer, KbTrace)."""
+    kb = NPC_KB.copy()
+    facts = [f"Spotted({spotter})", f"Ally({spotter},{receiver})",
+             f"{'' if receiver_chasing else '~'}Chasing({receiver})"]
+    for fact in facts:
+        kb.tell(fact)
+    goal = f"Investigate({receiver})"
+    answer = kb.ask(goal)
+    trace = KbTrace(f"INTERAKSI NPC -- {spotter} -> {receiver}   [ASK {goal}] = {answer.verdict}")
+    trace.add_inference(kb, facts, goal, answer)
+    return answer, trace
+
+
+# #############################################################################
+# MODUL planner.py
+# #############################################################################
+# =============================================================================
+# BAGIAN 13 -- AUTOMATED PLANNING (STRIPS / PDDL)
+# =============================================================================
+
+
+def atom(pred, *args):
+    """Fakta ground sebagai string: atom("at", "U1", "S00") -> "at(U1,S00)"."""
+    return f"{pred}({','.join(args)})" if args else pred
+
+
+def _is_param(term):
+    return term.startswith("?")
+
+
+# ---- 13.1 skema aksi & grounding --------------------------------------------
+@dataclass(frozen=True)
+class Schema:
+    """Skema aksi PDDL. Literal ditulis tuple: ("at", "?u", "?from").
+
+    cost boleh angka atau fungsi(binding: dict) -> angka."""
+    name: str
+    params: tuple          # (("?u", "unit"), ("?from", "sector"), ...)
+    pre: tuple
+    add: tuple
+    dele: tuple = ()
+    cost: object = 1
+    doc: str = ""
+
+    def signature(self):
+        return f"{self.name}({' '.join(p for p, _ in self.params)})"
+
+    def describe(self, static):
+        def lits(items):
+            return ", ".join(("*" if lit[0] in static else "") + f"{lit[0]}({','.join(lit[1:])})" for lit in items) or "-"
+        return f"{self.signature()}  pre: {lits(self.pre)}  add: {lits(self.add)}  del: {lits(self.dele)}"
+
+
+@dataclass(frozen=True)
+class StripsAction:
+    """Aksi ground: applicable bila pre <= s;  Result = (s - dele) | add."""
+    name: str
+    pre: frozenset
+    add: frozenset
+    dele: frozenset
+    cost: float
+    schema: str = ""
+    args: tuple = ()
+
+
+@dataclass
+class GroundingStats:
+    static_predicates: tuple
+    per_schema: dict = field(default_factory=dict)   # nama -> (kombinasi naif, aksi ground)
+
+    @property
+    def naive(self):
+        return sum(n for n, _ in self.per_schema.values())
+
+    @property
+    def grounded(self):
+        return sum(g for _, g in self.per_schema.values())
+
+
+def static_predicates(schemas, dynamic=()):
+    """Predikat yang tidak pernah muncul di add/del aksi mana pun.
+    `dynamic`: predikat persepsi yang diubah DUNIA (bukan aksi), jadi bukan statik."""
+    changing = {lit[0] for s in schemas for lit in s.add + s.dele} | set(dynamic)
+    used = {lit[0] for s in schemas for lit in s.pre + s.add + s.dele}
+    return tuple(sorted(used - changing))
+
+
+def ground(schemas, objects, init, dynamic=()):
+    """Instansiasi semua skema terhadap objek bertipe.
+
+    Prekondisi statik di-join lebih dulu dengan fakta statik di init, sehingga
+    kombinasi parameter yang mustahil (mis. fly antar sektor yang tidak
+    bertetangga) tidak pernah dibuat. Prekondisi statik lalu dibuang dari aksi
+    ground karena selalu benar.
+
+    Args:
+        objects: {tipe: [nama objek]}
+        init: iterable fakta ground (string) -- sumber fakta statik
+        dynamic: predikat persepsi (lihat static_predicates)
+    Returns: (list StripsAction, GroundingStats)"""
+    static = static_predicates(schemas, dynamic)
+    facts_by_pred = {}
+    for fact in init:
+        pred, _, rest = fact.partition("(")
+        if pred in static:
+            facts_by_pred.setdefault(pred, []).append(tuple(rest.rstrip(")").split(",")) if rest else ())
+    stats = GroundingStats(static)
+    actions = []
+    for schema in schemas:
+        naive = math.prod(len(objects.get(t, ())) for _, t in schema.params)
+        types = dict(schema.params)
+        static_pre = [lit for lit in schema.pre if lit[0] in static]
+        bindings = [{}]
+        for lit in static_pre:          # join bertahap (seperti query basis data)
+            joined = []
+            for b in bindings:
+                for args in facts_by_pred.get(lit[0], ()):
+                    nb = dict(b)
+                    ok = len(args) == len(lit) - 1
+                    for term, value in zip(lit[1:], args):
+                        if not ok:
+                            break
+                        if _is_param(term):
+                            if nb.setdefault(term, value) != value or value not in objects.get(types[term], ()):
+                                ok = False
+                        elif term != value:
+                            ok = False
+                    if ok:
+                        joined.append(nb)
+            bindings = joined
+        free = [p for p, _ in schema.params]
+        full = []
+        for b in bindings:
+            rest = [p for p in free if p not in b]
+            for values in itertools.product(*(objects.get(types[p], ()) for p in rest)):
+                nb = dict(b)
+                nb.update(zip(rest, values))
+                full.append(nb)
+        made = 0
+        for b in full:
+            def inst(lit):
+                return atom(lit[0], *(b[t] if _is_param(t) else t for t in lit[1:]))
+            pre = frozenset(inst(l) for l in schema.pre if l[0] not in static)
+            add = frozenset(inst(l) for l in schema.add)
+            dele = frozenset(inst(l) for l in schema.dele)
+            args = tuple(b[p] for p, _ in schema.params)
+            cost = schema.cost(b) if callable(schema.cost) else schema.cost
+            actions.append(StripsAction(f"{schema.name}({','.join(args)})", pre, add, dele, cost, schema.name, args))
+            made += 1
+        stats.per_schema[schema.name] = (naive, made)
+    return actions, stats
+
+
+# ---- 13.2 eksekusi: applicable & result --------------------------------------
+def applicable(state, action):
+    return action.pre <= state
+
+
+def missing_preconditions(state, action):
+    return sorted(action.pre - state)
+
+
+def apply(state, action):
+    return (frozenset(state) - action.dele) | action.add
+
+
+# ---- 13.3 heuristik h-max (relaxed planning, ignore delete lists) -------------
+class RelaxedReach:
+    """Biaya minimum tiap fakta bila delete list diabaikan (h-max).
+
+    Algoritma penghitung prekondisi + antrian prioritas (gaya HSP), O((F + A*P) log F)
+    per evaluasi, jauh lebih cepat daripada iterasi titik-tetap berulang."""
+
+    def __init__(self, actions):
+        self.actions = actions
+        self.by_pre = {}
+        for idx, act in enumerate(actions):
+            for p in act.pre:
+                self.by_pre.setdefault(p, []).append(idx)
+        self.no_pre = [idx for idx, act in enumerate(actions) if not act.pre]
+
+    def costs(self, state):
+        cost = {}
+        heap = [(0.0, f) for f in state]
+        remaining = [len(a.pre) for a in self.actions]
+        base = [0.0] * len(self.actions)
+
+        def fire(idx, at):
+            act = self.actions[idx]
+            for f in act.add:
+                heapq.heappush(heap, (at + act.cost, f))
+
+        for idx in self.no_pre:
+            fire(idx, 0.0)
+        while heap:
+            c, f = heapq.heappop(heap)
+            if f in cost:
+                continue
+            cost[f] = c
+            for idx in self.by_pre.get(f, ()):
+                remaining[idx] -= 1
+                base[idx] = max(base[idx], c)
+                if remaining[idx] == 0:
+                    fire(idx, base[idx])
+        return cost
+
+    def h(self, state, goal):
+        cost = self.costs(state)
+        return max((cost.get(g, math.inf) for g in goal), default=0.0)
+
+
+@dataclass
+class PlanResult:
+    found: bool
+    plan: list             # list StripsAction
+    cost: float
+    expanded: int
+    h0: float
+    final_state: frozenset
+    method: str = ""
+    limit_hit: bool = False
+    pruned: int = 0        # regresi: subgoal yang dipangkas mutex
+    trace: list = field(default_factory=list)   # cuplikan langkah regresi
+
+    @property
+    def names(self):
+        return [a.name for a in self.plan]
+
+
+# ---- 13.4 forward search (A* / UCS) ------------------------------------------
+def plan_forward(initial, goal, actions, use_heuristic=True, expansion_limit=4000):
+    """Forward state-space search pada state berupa himpunan fakta.
+    use_heuristic=True -> A* + h-max (admissible -> optimal); False -> UCS."""
+    initial, goal = frozenset(initial), frozenset(goal)
+    reach = RelaxedReach(actions)
+    h0 = reach.h(initial, goal)
+    method = "A* (h-max)" if use_heuristic else "UCS (h=0)"
+    if h0 == math.inf:
+        return PlanResult(False, [], math.inf, 0, h0, initial, method)
+    tie = itertools.count()
+    frontier = [(h0 if use_heuristic else 0.0, 0.0, next(tie), initial, ())]
+    best_g = {initial: 0.0}
+    expanded = 0
+    while frontier:
+        _, g, _, state, plan = heapq.heappop(frontier)
+        if g > best_g.get(state, math.inf):
+            continue
+        if goal <= state:
+            return PlanResult(True, list(plan), g, expanded, h0, state, method)
+        if expanded >= expansion_limit:
+            return PlanResult(False, [], math.inf, expanded, h0, initial, method, limit_hit=True)
+        expanded += 1
+        for act in actions:
+            if not act.pre <= state:
+                continue
+            nxt = (state - act.dele) | act.add
+            g2 = g + act.cost
+            if g2 >= best_g.get(nxt, math.inf):
+                continue
+            h = reach.h(nxt, goal) if use_heuristic else 0.0
+            if h == math.inf:
+                continue
+            best_g[nxt] = g2
+            heapq.heappush(frontier, (g2 + h, g2, next(tie), nxt, plan + (act,)))
+    return PlanResult(False, [], math.inf, expanded, h0, initial, method)
+
+
+# ---- 13.5 planning graph (GraphPlan) dengan mutex ------------------------------
+def _bits(mask):
+    while mask:
+        low = mask & -mask
+        yield low.bit_length() - 1
+        mask ^= low
+
+
+@dataclass
+class GraphLevel:
+    facts: int             # bitmask fakta di level S_i
+    fact_mutex: dict       # indeks fakta -> bitmask fakta yang mutex dengannya
+    actions: int = 0       # bitmask aksi di A_i (termasuk no-op)
+    action_mutex_pairs: int = 0
+
+
+class PlanningGraph:
+    """S0, A0, S1, A1, ... sampai goal muncul tanpa mutex dan graf level-off.
+
+    Mutex aksi : inconsistent effects, interference, competing needs.
+    Mutex fakta: inconsistent support (semua pasangan pencapai saling mutex).
+    Representasi bitset (int Python) supaya pasangan mutex dihitung cepat."""
+
+    def __init__(self, init, goal, actions, max_levels=40):
+        self.goal = frozenset(goal)
+        facts = sorted(set(init) | {f for a in actions for f in a.pre | a.add | a.dele} | self.goal)
+        self.fact_names = facts
+        self.fid = {f: i for i, f in enumerate(facts)}
+        self.real_actions = list(actions)
+        n_real = len(actions)
+        # aksi nyata + satu no-op (persistence) per fakta
+        self.pre, self.add, self.dele = [], [], []
+        for a in actions:
+            self.pre.append(self._mask(a.pre))
+            self.add.append(self._mask(a.add))
+            self.dele.append(self._mask(a.dele))
+        for i in range(len(facts)):
+            self.pre.append(1 << i)
+            self.add.append(1 << i)
+            self.dele.append(0)
+        n = len(self.pre)
+        self.n_real = n_real
+        needers, adders, deleters = {}, {}, {}
+        for j in range(n):
+            for f in _bits(self.pre[j]):
+                needers[f] = needers.get(f, 0) | (1 << j)
+            for f in _bits(self.add[j]):
+                adders[f] = adders.get(f, 0) | (1 << j)
+            for f in _bits(self.dele[j]):
+                deleters[f] = deleters.get(f, 0) | (1 << j)
+        self.needers = needers
+        # mutex statik: inconsistent effects + interference (tidak bergantung level)
+        self.static_mx = []
+        for j in range(n):
+            m = 0
+            for f in _bits(self.dele[j]):
+                m |= needers.get(f, 0) | adders.get(f, 0)
+            for f in _bits(self.pre[j] | self.add[j]):
+                m |= deleters.get(f, 0)
+            self.static_mx.append(m & ~(1 << j))
+        self.levels = [GraphLevel(self._mask(init), {})]
+        self.goal_level = None
+        self.leveled_off = False
+        goal_mask = self._mask(self.goal)
+        for _ in range(max_levels):
+            if self.goal_level is None and self._goal_ok(self.levels[-1], goal_mask):
+                self.goal_level = len(self.levels) - 1
+            nxt = self._expand(self.levels[-1])
+            if nxt.facts == self.levels[-1].facts and nxt.fact_mutex == self.levels[-1].fact_mutex:
+                self.leveled_off = True
+                break
+            self.levels.append(nxt)
+        if self.goal_level is None and self._goal_ok(self.levels[-1], goal_mask):
+            self.goal_level = len(self.levels) - 1
+
+    def _mask(self, facts):
+        m = 0
+        for f in facts:
+            if f in self.fid:
+                m |= 1 << self.fid[f]
+        return m
+
+    @staticmethod
+    def _goal_ok(level, goal_mask):
+        if goal_mask & ~level.facts:
+            return False
+        return all(not (level.fact_mutex.get(g, 0) & goal_mask) for g in _bits(goal_mask))
+
+    def _expand(self, level):
+        fm = level.fact_mutex
+        active = 0
+        for j in range(len(self.pre)):
+            pre = self.pre[j]
+            if pre & ~level.facts:
+                continue
+            if any(fm.get(p, 0) & pre for p in _bits(pre)):
+                continue            # prekondisi saling mutex -> aksi tidak mungkin
+            active |= 1 << j
+        # competing needs: prekondisi a mutex dengan prekondisi b
+        need_mx = {}
+        for p in fm:
+            m = 0
+            for q in _bits(fm[p]):
+                m |= self.needers.get(q, 0)
+            need_mx[p] = m
+        amx = {}
+        pairs = 0
+        for j in _bits(active):
+            m = self.static_mx[j]
+            for p in _bits(self.pre[j]):
+                m |= need_mx.get(p, 0)
+            m &= active & ~(1 << j)
+            amx[j] = m
+            pairs += bin(m).count("1")
+        facts = 0
+        achievers = {}
+        for j in _bits(active):
+            facts |= self.add[j]
+            for f in _bits(self.add[j]):
+                achievers[f] = achievers.get(f, 0) | (1 << j)
+        # inconsistent support: p,q mutex bila SETIAP pencapai p mutex dengan SETIAP pencapai q
+        common = {}
+        for f, ach in achievers.items():
+            c = -1
+            for j in _bits(ach):
+                c &= amx[j]
+            common[f] = c
+        fact_mutex = {}
+        flist = list(_bits(facts))
+        for idx, p in enumerate(flist):
+            for q in flist[idx + 1:]:
+                if achievers[q] & ~common[p] == 0:
+                    fact_mutex[p] = fact_mutex.get(p, 0) | (1 << q)
+                    fact_mutex[q] = fact_mutex.get(q, 0) | (1 << p)
+        level.actions = active
+        level.action_mutex_pairs = pairs // 2
+        return GraphLevel(facts, fact_mutex)
+
+    # ---- kueri ----------------------------------------------------------
+    def mutex_final(self, f, g):
+        """True bila f dan g mutex di level terakhir (mustahil benar bersamaan)."""
+        last = self.levels[-1]
+        i, j = self.fid.get(f), self.fid.get(g)
+        if i is None or j is None:
+            return True
+        return bool(last.fact_mutex.get(i, 0) >> j & 1)
+
+    def reachable_final(self, f):
+        i = self.fid.get(f)
+        return i is not None and bool(self.levels[-1].facts >> i & 1)
+
+    def summary_rows(self):
+        rows = []
+        for i, lv in enumerate(self.levels):
+            n_facts = bin(lv.facts).count("1")
+            n_fmx = sum(bin(m).count("1") for m in lv.fact_mutex.values()) // 2
+            n_act = bin(lv.actions & ((1 << self.n_real) - 1)).count("1") if lv.actions else 0
+            rows.append((i, n_facts, n_fmx, n_act, lv.action_mutex_pairs))
+        return rows
+
+
+# ---- 13.6 backward (regression) search ----------------------------------------
+def plan_regression(initial, goal, actions, graph=None, expansion_limit=4000, trace_steps=6):
+    """Regression search: mulai dari goal, mundur sampai g' subset init.
+
+    relevant  : add(a) beririsan dengan g
+    consistent: del(a) tidak beririsan dengan g
+    regress   : g' = (g - add(a)) | pre(a)
+    A* dengan h(g') = max_{f in g'} biaya h-max f dari init (admissible).
+    Subgoal yang memuat pasangan mutex (planning graph, level akhir) dipangkas."""
+    initial, goal = frozenset(initial), frozenset(goal)
+    cost_from_init = RelaxedReach(actions).costs(initial)
+    achievers = {}
+    for act in actions:
+        for f in act.add:
+            achievers.setdefault(f, []).append(act)
+
+    def h(g):
+        return max((cost_from_init.get(f, math.inf) for f in g), default=0.0)
+
+    h0 = h(goal)
+    method = "regresi (A* mundur)"
+    if h0 == math.inf:
+        return PlanResult(False, [], math.inf, 0, h0, goal, method)
+    tie = itertools.count()
+    frontier = [(h0, 0.0, next(tie), goal, ())]
+    best = {goal: 0.0}
+    expanded = pruned = 0
+    trace = []
+    while frontier:
+        _, g_cost, _, g, plan = heapq.heappop(frontier)
+        if g_cost > best.get(g, math.inf):
+            continue
+        if g <= initial:
+            return PlanResult(True, list(plan), g_cost, expanded, h0, g, method, pruned=pruned, trace=trace)
+        if expanded >= expansion_limit:
+            break
+        expanded += 1
+        relevant = {a for f in g for a in achievers.get(f, ())}
+        for act in sorted(relevant, key=lambda a: a.name):
+            if act.dele & g:
+                continue                        # tidak konsisten
+            g2 = (g - act.add) | act.pre
+            if graph is not None and any(graph.mutex_final(x, y) for x, y in itertools.combinations(g2, 2)):
+                pruned += 1
+                continue
+            c2 = g_cost + act.cost
+            if c2 >= best.get(g2, math.inf):
+                continue
+            hv = h(g2)
+            if hv == math.inf:
+                continue
+            best[g2] = c2
+            if len(trace) < trace_steps:
+                trace.append(f"regress({act.name}): {{{', '.join(sorted(g))}}} -> {{{', '.join(sorted(g2))}}}")
+            heapq.heappush(frontier, (c2 + hv, c2, next(tie), g2, (act,) + plan))
+    return PlanResult(False, [], math.inf, expanded, h0, goal, method, limit_hit=expanded >= expansion_limit,
+                      pruned=pruned, trace=trace)
+
+
+# #############################################################################
+# MODUL command.py
+# #############################################################################
+# =============================================================================
+# BAGIAN 14 -- PUSAT KOMANDO MUSUH: KB 3 + PLANNER LOGISTIK
+# =============================================================================
+# Percept (angka -> simbol proposisi) dihitung di CommandCenter.sense(); KB
+# memutuskan APAKAH bantuan dikirim dan PERAN apa yang dibutuhkan; planner
+# memutuskan UNIT mana, RUTE-nya lewat sektor peta, dan urutan langkahnya.
+COMMAND_GRACE_EXTRA = 3         # ronde tambahan di atas params.reinforce_after sebelum komando boleh memanggil bantuan
+# Nilai grace & langkah/ronde dicek dengan simulasi (150 battle per kebijakan, peta acak):
+# casual menang 0.47, skilled 0.73, bantuan tiba di 50% / 58% battle -- tetap di pita
+# nyaman balance.py (casual 0.35-0.55, skilled 0.65-0.85, bantuan 0.25-0.60).
+COMMAND_STEPS_PER_ROUND = 3     # langkah rencana yang dieksekusi tiap akhir ronde (bantuan butuh waktu tiba)
+REINFORCE_COOLDOWN = 5          # "Reinforced" bernilai true sekian ronde setelah bantuan tiba
+FORCE_WEAK_RATIO = 0.35         # HP drone hidup <= 35% dari total HP semua drone yang pernah muncul
+TANK_HEALTHY_RATIO = 0.5
+TANK_DAMAGED_RATIO = 0.4
+COMMAND_STOCK = {LOADOUT_BOM: 2, LOADOUT_MISIL: 3, LOADOUT_KAMIKAZE: 2}
+SECTOR_ROWS, SECTOR_COLS = 4, 4
+MAX_BASES = 3
+UCS_COMPARE_LIMIT = 3000        # batas ekspansi pembanding UCS (tanpa heuristik)
+
+COMMAND_KB = build_kb("COMMAND")
+COMMAND_ROLES = (("NeedFinisher", "finisher"), ("NeedDurable", "durable"), ("NeedPressure", "pressure"))
+ROLES = ("finisher", "durable", "pressure")
+LOADOUTS = (LOADOUT_BOM, LOADOUT_MISIL, LOADOUT_KAMIKAZE)
+
+# biaya tiap loadout untuk memenuhi suatu peran (loadout "natural" = biaya 1)
+ROLE_COST = {
+    "finisher": {LOADOUT_KAMIKAZE: 1, LOADOUT_MISIL: 3, LOADOUT_BOM: 4},
+    "durable": {LOADOUT_BOM: 1, LOADOUT_MISIL: 2, LOADOUT_KAMIKAZE: 5},
+    "pressure": {LOADOUT_MISIL: 1, LOADOUT_BOM: 3, LOADOUT_KAMIKAZE: 5},
+}
+GUIDED = {(LOADOUT_KAMIKAZE, "finisher")}   # kombinasi yang butuh penunjukan target dulu
+
+# predikat yang diubah dunia (persepsi), bukan oleh aksi -> tidak boleh dianggap statik
+PERCEPT_PREDICATES = ("spotter-alive", "slot-free", "window")
+
+
+def _engage_cost(b):
+    return ROLE_COST[b["?r"]][b["?l"]]
+
+
+LOGISTICS_SCHEMAS = (
+    Schema("arm", (("?u", "unit"), ("?b", "sector")),
+           pre=(("idle", "?u"), ("at", "?u", "?b"), ("base", "?b")),
+           add=(("armed", "?u"),), dele=(("idle", "?u"),), cost=1,
+           doc="persenjatai unit di pangkalan"),
+    Schema("fly", (("?u", "unit"), ("?a", "sector"), ("?b", "sector")),
+           pre=(("armed", "?u"), ("at", "?u", "?a"), ("adj", "?a", "?b"), ("open", "?b")),
+           add=(("at", "?u", "?b"),), dele=(("at", "?u", "?a"),), cost=1,
+           doc="terbang ke sektor tetangga yang bebas artileri"),
+    Schema("jam", (("?s", "sector"),),
+           pre=(("ew-ready",), ("aa", "?s")),
+           add=(("suppressed", "?s"),), dele=(("ew-ready",),), cost=2,
+           doc="jammer EW (sekali pakai) melumpuhkan artileri di satu sektor"),
+    Schema("fly-jammed", (("?u", "unit"), ("?a", "sector"), ("?b", "sector")),
+           pre=(("armed", "?u"), ("at", "?u", "?a"), ("adj", "?a", "?b"), ("aa", "?b"), ("suppressed", "?b")),
+           add=(("at", "?u", "?b"),), dele=(("at", "?u", "?a"),), cost=1,
+           doc="terbang masuk sektor artileri yang sudah di-jam"),
+    Schema("designate", (("?s", "sector"),),
+           pre=(("spotter-alive",), ("battle", "?s")),
+           add=(("target-lock", "?s"),), cost=1,
+           doc="drone yang masih bertempur menandai target untuk bantuan berpemandu"),
+    Schema("engage", (("?u", "unit"), ("?l", "loadout"), ("?s", "sector"), ("?r", "role")),
+           pre=(("armed", "?u"), ("at", "?u", "?s"), ("battle", "?s"), ("loadout", "?u", "?l"),
+                ("direct", "?l", "?r"), ("window", "?r"), ("slot-free",)),
+           add=(("on-station", "?r"), ("deployed", "?u")), dele=(("armed", "?u"), ("at", "?u", "?s")),
+           cost=_engage_cost, doc="unit bergabung ke pertempuran memenuhi peran ?r"),
+    Schema("engage-guided", (("?u", "unit"), ("?l", "loadout"), ("?s", "sector"), ("?r", "role")),
+           pre=(("armed", "?u"), ("at", "?u", "?s"), ("battle", "?s"), ("loadout", "?u", "?l"),
+                ("guided", "?l", "?r"), ("target-lock", "?s"), ("window", "?r"), ("slot-free",)),
+           add=(("on-station", "?r"), ("deployed", "?u")), dele=(("armed", "?u"), ("at", "?u", "?s")),
+           cost=_engage_cost, doc="seperti engage, tetapi butuh target-lock (kamikaze sebagai finisher)"),
+)
+
+
+def sector_of(cell):
+    r, c = cell
+    return f"S{r * SECTOR_ROWS // ROWS}{c * SECTOR_COLS // COLS}"
+
+
+def _sector_rc(name):
+    return int(name[1]), int(name[2])
+
+
+class LogisticsWorld:
+    """Objek, fakta statik, dan fakta fluent awal domain logistik untuk satu peta."""
+
+    def __init__(self, grid, tank_pos, stock=COMMAND_STOCK):
+        self.sectors = [f"S{r}{c}" for r in range(SECTOR_ROWS) for c in range(SECTOR_COLS)]
+        aa, camps = set(), {}
+        for r in range(ROWS):
+            for c in range(COLS):
+                if grid[r][c] == ARTILLERY:
+                    aa.add(sector_of((r, c)))
+                elif grid[r][c] == CAMP:
+                    s = sector_of((r, c))
+                    camps[s] = camps.get(s, 0) + 1
+        self.aa = aa
+        self.battle = sector_of(tank_pos)
+        br, bc = _sector_rc(self.battle)
+
+        def dist(s):
+            r, c = _sector_rc(s)
+            return abs(r - br) + abs(c - bc)
+
+        bases = sorted((s for s in camps if s != self.battle), key=lambda s: (-dist(s), s))[:MAX_BASES]
+        if not bases:       # peta tanpa kamp: pangkalan = sektor terjauh dari tank
+            bases = [max(self.sectors, key=lambda s: (dist(s), s))]
+        self.bases = bases
+        self.units = []
+        self.unit_loadout = {}
+        for key in LOADOUTS:
+            for i in range(stock.get(key, 0)):
+                name = f"{key.upper()}{i + 1}"
+                self.units.append(name)
+                self.unit_loadout[name] = key
+        self.unit_base = {u: bases[i % len(bases)] for i, u in enumerate(self.units)}
+
+        self.objects = {"unit": self.units, "sector": self.sectors, "loadout": list(LOADOUTS), "role": list(ROLES)}
+        static = set()
+        for s in self.sectors:
+            r, c = _sector_rc(s)
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                if 0 <= r + dr < SECTOR_ROWS and 0 <= c + dc < SECTOR_COLS:
+                    static.add(atom("adj", s, f"S{r + dr}{c + dc}"))
+            static.add(atom("aa", s) if s in aa else atom("open", s))
+        static |= {atom("base", b) for b in bases}
+        static.add(atom("battle", self.battle))
+        static |= {atom("loadout", u, l) for u, l in self.unit_loadout.items()}
+        for l in LOADOUTS:
+            for r in ROLES:
+                static.add(atom("guided" if (l, r) in GUIDED else "direct", l, r))
+        self.static = frozenset(static)
+        fluent = {atom("ew-ready")}
+        for u in self.units:
+            fluent |= {atom("idle", u), atom("at", u, self.unit_base[u])}
+        self.initial_fluents = frozenset(fluent)
+        self.actions, self.grounding = ground(LOGISTICS_SCHEMAS, self.objects, self.static | fluent,
+                                              dynamic=PERCEPT_PREDICATES)
+        self.static_preds = self.grounding.static_predicates
+
+    def sector_map_lines(self, facts):
+        """Peta sektor ASCII: B=pangkalan, X=artileri (j=sudah di-jam), T=tank, angka=unit di sektor."""
+        at = {}
+        for f in facts:
+            if f.startswith("at("):
+                u, s = f[3:-1].split(",")
+                at[s] = at.get(s, 0) + 1
+        rows = []
+        for r in range(SECTOR_ROWS):
+            cells = []
+            for c in range(SECTOR_COLS):
+                s = f"S{r}{c}"
+                tag = ("T" if s == self.battle else "") + ("B" if s in self.bases else "")
+                if s in self.aa:
+                    tag += "j" if atom("suppressed", s) in facts else "X"
+                if at.get(s):
+                    tag += str(at[s])
+                cells.append(f"{s}[{tag:<4}]")
+            rows.append("   " + " ".join(cells))
+        return rows
+
+
+class CommandCenter:
+    """Pusat komando musuh: memutuskan bantuan drone lewat KB + planner logistik.
+    Menggantikan peluang acak `reinforce_chance_pct` di mode game."""
+
+    def __init__(self, grid=None, tank_pos=None):
+        if grid is None:        # dipakai tanpa peta (mis. simulasi): buat peta acak
+            drone, tank_pos = pick_random_start_positions()
+            grid, _ = generate_map(drone, tank_pos)
+        self.world = LogisticsWorld(grid, tank_pos)
+        self.facts = set(self.world.initial_fluents)    # fluent persisten (posisi unit, jammer)
+        self.plan = []          # sisa StripsAction yang belum dieksekusi
+        self.goal = None
+        self.role = None
+        self.plan_trace = None  # KbTrace saat rencana dibuat
+        self.exec_log = []      # [(gaya, teks)] eksekusi langkah demi langkah
+        self.last_reinforce_round = -10 ** 6
+        self.last_trace = None
+
+    # ---- persepsi ---------------------------------------------------------
+    @property
+    def stock(self):
+        """Sisa unit per loadout (belum dikerahkan)."""
+        left = {key: 0 for key in LOADOUTS}
+        for u in self.world.units:
+            if atom("deployed", u) not in self.facts:
+                left[self.world.unit_loadout[u]] += 1
+        return left
+
+    def sense(self, enc):
+        """Abstraksi angka -> simbol proposisi (lapisan persepsi)."""
+        alive = enc.alive_drones()
+        pool = sum(d.loadout.max_hp for d in enc.drones)
+        weak = bool(pool) and sum(d.hp for d in alive) <= FORCE_WEAK_RATIO * pool
+        return {
+            "GraceOver": enc.round_no > enc.params.reinforce_after + COMMAND_GRACE_EXTRA,
+            "SlotFree": len(alive) < MAX_ACTIVE_DRONES,
+            "QuotaLeft": enc.reinforcement_count < MAX_REINFORCEMENTS and sum(self.stock.values()) > 0,
+            "Reinforced": enc.round_no - self.last_reinforce_round <= REINFORCE_COOLDOWN,
+            "EnRoute": bool(self.plan),
+            "ForceWeak": weak,
+            "DroneLost": any(not d.is_alive() for d in enc.drones),
+            "MisilAlive": any(d.loadout.key == LOADOUT_MISIL for d in alive),
+            "TankHealthy": enc.tank_hp >= TANK_HEALTHY_RATIO * enc.tank_max_hp,
+            "TankDamaged": enc.tank_hp <= TANK_DAMAGED_RATIO * enc.tank_max_hp,
+        }
+
+    def percept_facts(self, enc, percepts):
+        """Fakta persepsi untuk planner (berubah karena dunia, bukan karena aksi)."""
+        facts = {atom("window", "durable"), atom("window", "pressure")}
+        if percepts["TankDamaged"]:
+            facts.add(atom("window", "finisher"))
+        if enc.alive_drones():
+            facts.add(atom("spotter-alive"))
+        if percepts["SlotFree"]:
+            facts.add(atom("slot-free"))
+        return facts
+
+    def _state(self, enc, percepts):
+        return frozenset(self.facts) | self.percept_facts(enc, percepts)
+
+    # ---- keputusan --------------------------------------------------------
+    def decide(self, enc):
+        """Dipanggil di akhir tiap ronde. Return (loadout_key | None, baris_log)."""
+        percepts = self.sense(enc)
+        if self.plan:
+            return self._execute(enc, percepts)
+
+        kb = COMMAND_KB.copy()
+        facts = []
+        for name, value in percepts.items():
+            facts.append(name if value else f"~{name}")
+            kb.tell(facts[-1], label="fakta")
+        trace = KbTrace(f"KOMANDO -- evaluasi bantuan, giliran {enc.round_no}")
+        answer = kb.ask("CallReinforcement")
+        trace.add(KB_VERDICT_STYLE[answer.verdict] if answer.verdict != "TIDAK" else "warn",
+                  f"ASK(CallReinforcement) = {answer.verdict}"
+                  + ("  -> kirim bantuan" if answer.verdict == "YA" else "  -> tidak ada bantuan ronde ini"))
+        trace.add_inference(kb, facts, "CallReinforcement", answer)
+        self.last_trace = trace
+        if answer.verdict != "YA":
+            return None, []
+
+        role = "pressure"
+        for symbol, name in COMMAND_ROLES:
+            role_answer = kb.ask(symbol)
+            if role_answer.verdict == "YA":
+                role = name
+                trace.add("good", f"ASK({symbol}) = YA  -> peran bantuan: {role}")
+                trace.add_inference(kb, facts, symbol, role_answer, show_rules=False)
+                break
+
+        state = self._state(enc, percepts)
+        goal = frozenset({atom("on-station", role)})
+        result = self._plan_with_report(state, goal, trace)
+        if not result.found:
+            trace.add("bad", "Tidak ada rencana -- bantuan dibatalkan.")
+            return None, ["Komando: tidak ada unit/rute untuk memenuhi peran bantuan."]
+        self.plan, self.goal, self.role = list(result.plan), goal, role
+        self.plan_trace = trace
+        self.exec_log = [("hdr", f"Eksekusi ({COMMAND_STEPS_PER_ROUND} langkah/ronde, applicable dicek tiap langkah):")]
+        key, lines = self._execute(enc, percepts)
+        return key, [f"Komando: peran {role}, rencana {len(result.plan)} langkah"] + lines
+
+    def _plan_with_report(self, state, goal, trace):
+        """Jalankan planning graph, A*, UCS, dan regresi; tulis semuanya ke trace."""
+        w = self.world
+        trace.add("hdr", f"Planner -- domain logistik drone ({len(LOGISTICS_SCHEMAS)} skema berparameter, * = statik):")
+        for schema in LOGISTICS_SCHEMAS:
+            trace.add("dim", "   " + schema.describe(w.static_preds))
+        g = w.grounding
+        trace.add("hdr", f"Grounding: {g.naive} kombinasi parameter -> {g.grounded} aksi ground "
+                         f"(fakta statik: {', '.join(g.static_predicates)})")
+        trace.add("dim", "   " + "  |  ".join(f"{n}: {a}->{b}" for n, (a, b) in g.per_schema.items()))
+        trace.add("hdr", "Peta sektor (T=tank, B=pangkalan, X=artileri, j=di-jam, angka=unit):")
+        for line in w.sector_map_lines(state):
+            trace.add("normal", line)
+        fluent = sorted(f for f in state if not f.startswith(("idle(", "at(")))
+        trace.add("dim", f"Init: {len(state)} fakta fluent; unit siap: {sum(f.startswith('idle(') for f in state)}; "
+                         f"lain: {', '.join(fluent)}")
+        trace.add("dim", f"Goal: {{{', '.join(sorted(goal))}}}")
+
+        graph = PlanningGraph(state, goal, w.actions)
+        trace.add("hdr", "Planning graph (mutex: inconsistent effects / interference / competing needs / support):")
+        for i, n_f, n_fm, n_a, n_am in graph.summary_rows():
+            trace.add("dim", f"   S{i}: {n_f} fakta, {n_fm} pasang mutex   A{i}: {n_a} aksi, {n_am} pasang mutex")
+        if graph.goal_level is None:
+            trace.add("bad", "   goal tidak pernah muncul tanpa mutex -> mustahil dicapai")
+        else:
+            trace.add("good", f"   goal muncul tanpa mutex di level {graph.goal_level} (set-level: rencana >= "
+                              f"{graph.goal_level} langkah); {'level-off' if graph.leveled_off else 'berhenti'} "
+                              f"di level {len(graph.levels) - 1}")
+
+        result = plan_forward(state, goal, w.actions, use_heuristic=True)
+        trace.add("hdr", f"Forward search {result.method}: h0={result.h0:g}")
+        if result.found:
+            for step, act in enumerate(result.plan, 1):
+                trace.add("normal", f"   {step}. {act.name}   (biaya {act.cost:g})")
+            trace.add("good", f"   biaya {result.cost:g}, {result.expanded} state diekspansi")
+        ucs = plan_forward(state, goal, w.actions, use_heuristic=False, expansion_limit=UCS_COMPARE_LIMIT)
+        ucs_txt = (f">= {ucs.expanded} (batas)" if ucs.limit_hit else f"{ucs.expanded}")
+        trace.add("dim", f"   pembanding {ucs.method}: {ucs_txt} state diekspansi"
+                         + (f", biaya {ucs.cost:g}" if ucs.found else ""))
+
+        back = plan_regression(state, goal, w.actions, graph=graph)
+        trace.add("hdr", f"Backward search {back.method}: relevant & consistent, g' = (g - add) | pre")
+        for line in back.trace:
+            trace.add("dim", "   " + line)
+        if back.found:
+            trace.add("good", f"   g' subset init setelah {back.expanded} ekspansi ({back.pruned} subgoal "
+                              f"dipangkas mutex); biaya {back.cost:g}: {' -> '.join(back.names)}")
+        else:
+            trace.add("warn", f"   regresi tidak menemukan rencana ({back.expanded} ekspansi)")
+        return result
+
+    def _execute(self, enc, percepts):
+        """Eksekusi rencana langkah demi langkah (slide 17): cek applicable(s, a)
+        terhadap state NYATA sebelum tiap langkah; bila gagal, replan dari state itu."""
+        state = self._state(enc, percepts)
+        key, lines, done = None, [], 0
+        while self.plan and done < COMMAND_STEPS_PER_ROUND:
+            act = self.plan[0]
+            if not applicable(state, act):
+                miss = ", ".join(missing_preconditions(state, act))
+                self.exec_log.append(("bad", f"ronde {enc.round_no}: {act.name} TIDAK applicable (hilang: {miss})"))
+                replan = plan_forward(state, self.goal, self.world.actions)
+                if replan.found:
+                    self.plan = list(replan.plan)
+                    self.exec_log.append(("warn", f"   replan dari state sekarang: {' -> '.join(replan.names)}"))
+                    continue
+                self.exec_log.append(("bad", "   tidak ada rencana baru -> misi bantuan dibatalkan"))
+                lines.append("Komando: rencana bantuan gagal di tengah jalan, dibatalkan.")
+                self.plan = []
+                break
+            state = apply(state, act)
+            self.plan.pop(0)
+            done += 1
+            self.exec_log.append(("good", f"ronde {enc.round_no}: {act.name}  [applicable: {', '.join(sorted(act.pre))}]"))
+            if act.schema in ("engage", "engage-guided"):
+                key = self.world.unit_loadout[act.args[0]]
+                self.last_reinforce_round = enc.round_no
+                state = frozenset(f for f in state if not f.startswith("on-station("))   # misi selesai
+                self.exec_log.append(("good", f"   goal {', '.join(sorted(self.goal))} tercapai -> drone {key} bergabung"))
+                self.plan = []
+        self.facts = {f for f in state if not f.startswith(tuple(p + "(" for p in PERCEPT_PREDICATES))
+                      and f not in PERCEPT_PREDICATES}
+        if self.plan:
+            lines.append(f"Komando: bantuan dalam perjalanan ({len(self.plan)} langkah lagi).")
+        trace = KbTrace(f"KOMANDO -- eksekusi rencana peran {self.role}, giliran {enc.round_no}")
+        trace.lines += self.exec_log
+        if self.plan:
+            trace.add("dim", "Sisa rencana: " + " -> ".join(a.name for a in self.plan))
+        if self.plan_trace is not None:
+            trace.add("hdr", "---- inferensi & perencanaan saat bantuan diputuskan ----")
+            trace.lines += self.plan_trace.lines
+        self.last_trace = trace
+        return key, lines
+
+
+# #############################################################################
+# MODUL mdp.py
+# #############################################################################
+# =============================================================================
+# BAGIAN 15 -- MDP, VALUE ITERATION, BAYES & MEU
+# =============================================================================
+# Pada A*/UCS drone menyusun RENCANA (daftar langkah tetap). Pada mode MDP drone
+# memakai KEBIJAKAN pi(s): aturan "di sel ini lakukan aksi itu" yang tetap valid
+# walau gerakan meleset (slip), karena dihitung dari model ketidakpastian:
+#
+#   1. State s            : sel peta. Goal (posisi tank) dan sel artileri = terminal.
+#   2. Action             : Atas / Kanan / Kiri / Bawah.
+#   3. Transition P(s'|s,a): berhasil (1 - slip), meleset ke dua sisi tegak lurus
+#                            masing-masing slip / 2 (angin / jamming). Keluar peta = diam.
+#   4. Reward R(s')       : goal +10, artileri -20 (drone jatuh), selain itu
+#                            -0.2 x biaya terrain (tanah biasa = -0.2).
+#   5. Discount gamma     : 0.8 / 0.9 / 0.95 (default 0.9).
+#
+# Kenapa langkah -0.2, bukan -2 seperti slide? Diukur dengan --mdp-report (lihat
+# README, "Analisis desain reward"): angka slide cocok untuk dunia 4 state, tetapi
+# di grid 22x16 dengan jarak ~35 langkah gamma=0.95 membuat berjalan terus
+# (-2/(1-gamma) = -40) lebih buruk daripada menabrak artileri (-20) sehingga
+# sebagian sel memilih bunuh diri -- jebakan desain reward di slide 23.
+#
+# Bellman : Q(s,a) = sum_s' P(s'|s,a) [ R(s') + gamma V(s') ]
+#           V(s)   = max_a Q(s,a)         (V = 0 pada state terminal)
+# Value iteration: V0 = 0, hitung V(k+1) hanya dari V(k), berhenti saat perubahan
+# terbesar < MDP_EPS. Padanan slide: slip = f (peluang banjir 0.1 normal / 0.25
+# saat peringatan BMKG) -> cuaca "Normal" / "Badai" di game.
+
+MDP_ACTIONS = (("Atas", (-1, 0)), ("Kanan", (0, 1)), ("Kiri", (0, -1)), ("Bawah", (1, 0)))
+MDP_GOAL_REWARD = 10.0
+MDP_HAZARD_REWARD = -20.0
+MDP_STEP_REWARD = -0.2          # per satuan biaya terrain drone
+MDP_SLIDE_STEP_REWARD = -2.0    # nilai di slide, hanya untuk analisis --mdp-report
+MDP_GAMMAS = (0.8, 0.9, 0.95)
+MDP_DEFAULT_GAMMA = 0.9
+MDP_WEATHER = {"Normal": 0.10, "Badai": 0.25}    # peluang slip total (analog f pada slide)
+WEATHER_PRIOR = {"Normal": 0.7, "Badai": 0.3}     # P(cuaca) sebelum ada bukti
+REPORT_ACCURACY = 0.8           # P(laporan cuaca = cuaca sebenarnya)
+MDP_EPS = 1e-4
+MDP_MAX_ITER = 300
+MDP_CACHE_SIZE = 16             # solusi value iteration (goal x cuaca) yang disimpan
+BELIEF_LOG_SHOWN = 6            # langkah Bayes terakhir yang ditampilkan di overlay
+
+
+# ---- 15.1 value iteration untuk satu model transisi ----------------------------
+class MDPSolution:
+    """Hasil value iteration untuk satu goal pada satu peta, gamma, dan slip.
+
+    Menyimpan seluruh riwayat V_0..V_K supaya tiap iterasi bisa ditampilkan
+    (seperti tabel iterasi di slide). Waktu: O(K x S x A); memori: O(K x S)."""
+
+    def __init__(self, grid, goal, gamma, slip, step_reward=MDP_STEP_REWARD):
+        t0 = time.perf_counter()
+        self.goal, self.gamma, self.slip, self.step_reward = goal, gamma, slip, step_reward
+        n = ROWS * COLS
+        self.n = n
+        self.goal_id = goal[0] * COLS + goal[1]
+        self.reward = [0.0] * n
+        self.kind = ["free"] * n            # free | goal | hazard
+        for r in range(ROWS):
+            for c in range(COLS):
+                i = r * COLS + c
+                terrain = grid[r][c]
+                if i == self.goal_id:
+                    self.kind[i], self.reward[i] = "goal", MDP_GOAL_REWARD
+                elif terrain == ARTILLERY:
+                    self.kind[i], self.reward[i] = "hazard", MDP_HAZARD_REWARD
+                else:
+                    self.reward[i] = step_reward * DRONE_TERRAIN_COST[terrain]
+        self.free_ids = [i for i in range(n) if self.kind[i] == "free"]
+
+        # model transisi: outcomes[i][a] = ((p, j), (p, j), (p, j)); j = state pendaratan
+        self.outcomes = {}
+        for i in self.free_ids:
+            r, c = divmod(i, COLS)
+            per_action = []
+            for _, (dr, dc) in MDP_ACTIONS:
+                moves = ((dr, dc, 1 - slip), (dc, dr, slip / 2), (-dc, -dr, slip / 2))
+                landing = []
+                for mr, mc, p in moves:
+                    nr, nc = r + mr, c + mc
+                    j = nr * COLS + nc if 0 <= nr < ROWS and 0 <= nc < COLS else i   # keluar peta: diam
+                    landing.append((p, j))
+                per_action.append(tuple(landing))
+            self.outcomes[i] = tuple(per_action)
+        # bentuk siap-hitung: (sum p*R(j), p0, j0, p1, j1, p2, j2) per aksi
+        fast = {}
+        for i, per_action in self.outcomes.items():
+            rows = []
+            for (p0, j0), (p1, j1), (p2, j2) in per_action:
+                base = p0 * self.reward[j0] + p1 * self.reward[j1] + p2 * self.reward[j2]
+                rows.append((base, p0, j0, p1, j1, p2, j2))
+            fast[i] = tuple(rows)
+
+        # iterasi minimum: gelombang informasi dari goal harus sempat menjangkau sel
+        # terjauh (BFS), kalau tidak sel jauh berhenti "mendatar" sebelum kebijakannya jelas.
+        depth = self._max_depth()
+        gm = gamma
+        V = [0.0] * n
+        self.history = [array("d", V)]
+        k = 0
+        while k < MDP_MAX_ITER:
+            nxt = V[:]
+            delta = 0.0
+            for i in self.free_ids:
+                best = -math.inf
+                for base, p0, j0, p1, j1, p2, j2 in fast[i]:
+                    q = base + gm * (p0 * V[j0] + p1 * V[j1] + p2 * V[j2])
+                    if q > best:
+                        best = q
+                nxt[i] = best
+                d = abs(best - V[i])
+                if d > delta:
+                    delta = d
+            V = nxt
+            k += 1
+            self.history.append(array("d", V))
+            if delta < MDP_EPS and k >= depth + 2:
+                break
+        self.iterations = k
+        self._policies = {}
+        self.time_ms = (time.perf_counter() - t0) * 1000.0
+
+    def _max_depth(self):
+        """Jarak BFS terjauh dari goal lewat sel non-artileri (batas bawah iterasi)."""
+        seen = {self.goal_id: 0}
+        queue = deque((self.goal_id,))
+        while queue:
+            i = queue.popleft()
+            r, c = divmod(i, COLS)
+            for _, (dr, dc) in MDP_ACTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    j = nr * COLS + nc
+                    if j not in seen and self.kind[j] == "free":
+                        seen[j] = seen[i] + 1
+                        queue.append(j)
+        return max(seen.values())
+
+    # ---- akses nilai / kebijakan ------------------------------------------
+    def q_values(self, i, k=None):
+        """Q(s, a) untuk keempat aksi, dihitung dari V_k (k=None -> iterasi akhir)."""
+        V = self.history[self.iterations if k is None else k]
+        out = []
+        for per in self.outcomes[i]:
+            out.append(sum(p * (self.reward[j] + self.gamma * V[j]) for p, j in per))
+        return out
+
+    def policy(self, k=None):
+        """pi_k(s): indeks aksi terbaik menurut V_k (-1 untuk state terminal)."""
+        k = self.iterations if k is None else k
+        if k not in self._policies:
+            pol = [-1] * self.n
+            for i in self.free_ids:
+                q = self.q_values(i, k)
+                pol[i] = q.index(max(q))
+            self._policies[k] = pol
+        return self._policies[k]
+
+    def value(self, i, k=None):
+        return self.history[self.iterations if k is None else k][i]
+
+    def rollout(self, pos):
+        """Rute yang akan ditempuh bila semua aksi berhasil (tanpa slip), mengikuti pi."""
+        pol = self.policy()
+        path, seen = [pos], {pos}
+        while len(path) <= self.n:
+            i = pos[0] * COLS + pos[1]
+            a = pol[i]
+            if a < 0:
+                break
+            dr, dc = MDP_ACTIONS[a][1]
+            pos = (pos[0] + dr, pos[1] + dc)
+            if not (0 <= pos[0] < ROWS and 0 <= pos[1] < COLS) or pos in seen:
+                break
+            path.append(pos)
+            seen.add(pos)
+            if self.kind[pos[0] * COLS + pos[1]] != "free":
+                break
+        return path
+
+    def sample_step(self, pos):
+        """Satu langkah NYATA dari pos: aksi pi(s), hasilnya diundi sesuai P(s'|s,a)."""
+        i = pos[0] * COLS + pos[1]
+        a = self.policy()[i]
+        if a < 0:
+            return pos
+        roll = random.random()
+        acc = 0.0
+        for p, j in self.outcomes[i][a]:
+            acc += p
+            if roll < acc:
+                return divmod(j, COLS)
+        return divmod(self.outcomes[i][a][0][1], COLS)
+
+    # ---- penjelasan Bellman untuk overlay -----------------------------------
+    def bellman_trace(self, cell, k=None):
+        k = self.iterations if k is None else k
+        name = cell_name(cell)
+        trace = KbTrace(f"MDP -- Bellman di {name} (iterasi {k}/{self.iterations})")
+        i = cell[0] * COLS + cell[1]
+        if self.kind[i] != "free":
+            what = "goal (posisi tank): reward +10, terminal" if self.kind[i] == "goal" \
+                else "artileri anti-udara: reward -20, terminal (drone jatuh)"
+            trace.add("hdr", f"{name} adalah state terminal: {what}.")
+            trace.add("dim", "V(terminal) = 0; tidak ada aksi yang dipilih di sini.")
+            return trace
+        q = self.q_values(i, k)
+        best = max(q)
+        pol = q.index(best)
+        trace.add("hdr", "Q(s,a) = sum P(s'|s,a) x [ R(s') + gamma x V(s') ]      V(s) = max_a Q(s,a)")
+        trace.add("dim", f"gamma={self.gamma:g}  slip={self.slip * 100:g}%  "
+                         f"(berhasil {100 - self.slip * 100:g}%, meleset ke tiap sisi {self.slip * 50:g}%)")
+        V = self.history[k]
+        for a, (label, _) in enumerate(MDP_ACTIONS):
+            style = "good" if a == pol else "normal"
+            mark = "   <- pi(s)" if a == pol else ""
+            trace.add(style, f"Q({name}, {label}) = {q[a]:+.2f}{mark}")
+            for p, j in self.outcomes[i][a]:
+                if p <= 0:
+                    continue
+                tag = {"goal": " goal", "hazard": " ARTILERI"}.get(self.kind[j], "")
+                trace.add("dim", f"    {p:.3f} x [ R={self.reward[j]:+.1f} + {self.gamma:g} x V({cell_name(divmod(j, COLS))})"
+                                 f"={V[j]:+.2f} ]{tag}")
+        trace.add("good", f"V_{k + 1}({name}) = max Q = {best:+.2f}  ->  pi({name}) = {MDP_ACTIONS[pol][0]}")
+        return trace
+
+
+# ---- 15.2 belief cuaca: aturan Bayes ----------------------------------------
+class BayesStep:
+    __slots__ = ("label", "prior", "likelihood", "evidence", "posterior")
+
+    def __init__(self, label, prior, likelihood, evidence, posterior):
+        self.label, self.prior, self.likelihood = label, prior, likelihood
+        self.evidence, self.posterior = evidence, posterior
+
+
+class WeatherBelief:
+    """P(cuaca | semua bukti sejauh ini), di-update dengan aturan Bayes:
+
+        P(w | e) = P(e | w) P(w) / P(e),   P(e) = sum_w' P(e | w') P(w')
+
+    Bukti dianggap saling bebas bila cuaca diketahui (naive Bayes), sehingga
+    posterior satu langkah menjadi prior langkah berikutnya."""
+
+    def __init__(self, prior=WEATHER_PRIOR):
+        self.p = dict(prior)
+        self.log = []
+
+    def update(self, label, likelihood):
+        evidence = sum(likelihood[w] * self.p[w] for w in self.p)
+        if evidence <= 0:
+            return
+        post = {w: likelihood[w] * self.p[w] / evidence for w in self.p}
+        self.log.append(BayesStep(label, dict(self.p), dict(likelihood), evidence, post))
+        self.p = post
+
+    def observe_move(self, slipped, slip_prob_by_weather):
+        """Percept gerakan: slip_prob_by_weather[w] = P(meleset teramati | w)."""
+        lik = {w: (p if slipped else 1 - p) for w, p in slip_prob_by_weather.items()}
+        if all(v == lik["Normal"] for v in lik.values()):
+            return      # bukti tidak membedakan cuaca
+        self.update("gerakan MELESET" if slipped else "gerakan tepat", lik)
+
+    def observe_report(self, reported):
+        lik = {w: REPORT_ACCURACY if w == reported else 1 - REPORT_ACCURACY for w in self.p}
+        self.update(f"laporan cuaca: {reported}", lik)
+
+    def expected_slip(self):
+        return sum(self.p[w] * MDP_WEATHER[w] for w in self.p)
+
+    def key(self):
+        return tuple(round(self.p[w], 9) for w in sorted(self.p))
+
+    def add_to_trace(self, trace, shown=BELIEF_LOG_SHOWN):
+        trace.add("hdr", "Belief cuaca (Bayes): P(w|e) = P(e|w) P(w) / P(e)")
+        if not self.log:
+            trace.add("dim", "   belum ada bukti -> belief = prior " + self._fmt(self.p))
+        for step in self.log[-shown:]:
+            lik = "  ".join(f"P(e|{w})={step.likelihood[w]:.2f}" for w in step.prior)
+            trace.add("dim", f"   e = {step.label}:  {lik}  P(e)={step.evidence:.3f}")
+            trace.add("normal", f"      {self._fmt(step.prior)}  ->  {self._fmt(step.posterior)}")
+        if len(self.log) > shown:
+            trace.add("dim", f"   ({len(self.log) - shown} update lebih awal tidak ditampilkan)")
+        trace.add("good", f"   belief sekarang {self._fmt(self.p)}; slip harapan {self.expected_slip() * 100:.1f}%")
+
+    @staticmethod
+    def _fmt(p):
+        return "  ".join(f"P({w})={v:.3f}" for w, v in p.items())
+
+
+# ---- 15.3 kebijakan MEU di atas belief ----------------------------------------
+class BeliefPolicy:
+    """Kebijakan MEU: pi(s) = argmax_a EU(a | e),  EU(a | e) = sum_w P(w|e) Q_w(s,a).
+
+    Q_w berasal dari value iteration tiap cuaca (MDPSolution). Ini aproksimasi
+    QMDP: belief dipakai untuk memilih aksi sekarang, tetapi nilai masa depan
+    dihitung seolah cuaca akan segera diketahui. Antarmukanya sama dengan
+    MDPSolution (value/policy/rollout/kind/free_ids) supaya Game & tampilan
+    tidak perlu tahu bedanya."""
+
+    def __init__(self, solutions, belief_p, goal_note=""):
+        self.solutions = solutions            # {cuaca: MDPSolution}
+        self.p = dict(belief_p)
+        self.goal_note = goal_note
+        any_sol = next(iter(solutions.values()))
+        self.goal, self.gamma, self.n = any_sol.goal, any_sol.gamma, any_sol.n
+        self.kind, self.free_ids, self.reward = any_sol.kind, any_sol.free_ids, any_sol.reward
+        self.outcomes = any_sol.outcomes      # sel pendaratan sama untuk semua cuaca
+        self.iterations = max(s.iterations for s in solutions.values())
+        self.time_ms = sum(s.time_ms for s in solutions.values())
+        self.slip = sum(self.p[w] * s.slip for w, s in solutions.items())
+        self._policies = {}
+        self._values = {}
+
+    def _k(self, sol, k):
+        return sol.iterations if k is None else min(k, sol.iterations)
+
+    def q_by_weather(self, i, k=None):
+        return {w: s.q_values(i, self._k(s, k)) for w, s in self.solutions.items()}
+
+    def q_values(self, i, k=None):
+        """EU(a | e) untuk keempat aksi."""
+        qs = self.q_by_weather(i, k)
+        return [sum(self.p[w] * qs[w][a] for w in qs) for a in range(len(MDP_ACTIONS))]
+
+    def value_array(self, k=None):
+        """V(s) harapan = sum_w P(w|e) V_w(s)."""
+        key = self.iterations if k is None else k
+        if key not in self._values:
+            out = [0.0] * self.n
+            for w, s in self.solutions.items():
+                V = s.history[self._k(s, k)]
+                for i in range(self.n):
+                    out[i] += self.p[w] * V[i]
+            self._values[key] = out
+        return self._values[key]
+
+    def value(self, i, k=None):
+        return self.value_array(k)[i]
+
+    def policy(self, k=None):
+        key = self.iterations if k is None else k
+        if key not in self._policies:
+            pol = [-1] * self.n
+            for i in self.free_ids:
+                q = self.q_values(i, k)
+                pol[i] = q.index(max(q))
+            self._policies[key] = pol
+        return self._policies[key]
+
+    def rollout(self, pos):
+        """Rute bila semua aksi berhasil (tanpa slip), mengikuti pi_MEU."""
+        pol = self.policy()
+        path, seen = [pos], {pos}
+        while len(path) <= self.n:
+            a = pol[pos[0] * COLS + pos[1]]
+            if a < 0:
+                break
+            dr, dc = MDP_ACTIONS[a][1]
+            pos = (pos[0] + dr, pos[1] + dc)
+            if not (0 <= pos[0] < ROWS and 0 <= pos[1] < COLS) or pos in seen:
+                break
+            path.append(pos)
+            seen.add(pos)
+            if self.kind[pos[0] * COLS + pos[1]] != "free":
+                break
+        return path
+
+    def sample_step(self, pos, true_weather, rng=random):
+        """Satu langkah NYATA: aksi pi_MEU(s), hasilnya diundi dari P(s'|s,a, cuaca sebenarnya).
+
+        Returns: (sel baru, meleset?, {cuaca: P(meleset teramati | cuaca)})"""
+        i = pos[0] * COLS + pos[1]
+        a = self.policy()[i]
+        if a < 0:
+            return pos, False, None
+        real = self.solutions[true_weather].outcomes[i][a]
+        intended = real[0][1]
+        roll, acc, landing = rng.random(), 0.0, intended
+        for p, j in real:
+            acc += p
+            if roll < acc:
+                landing = j
+                break
+        slip_obs = {w: sum(p for p, j in s.outcomes[i][a] if j != intended) for w, s in self.solutions.items()}
+        return divmod(landing, COLS), landing != intended, slip_obs
+
+    # ---- penjelasan MEU + Bellman untuk overlay -----------------------------
+    def bellman_trace(self, cell, k=None, belief=None):
+        name = cell_name(cell)
+        shown_k = self.iterations if k is None else k
+        trace = KbTrace(f"MDP + MEU -- keputusan di {name} (iterasi {shown_k}/{self.iterations})")
+        if belief is not None:
+            belief.add_to_trace(trace)
+        if self.goal_note:
+            trace.add("dim", f"Goal: {self.goal_note}")
+        i = cell[0] * COLS + cell[1]
+        if self.kind[i] != "free":
+            what = "goal (posisi tank): reward +10, terminal" if self.kind[i] == "goal" \
+                else "artileri anti-udara: reward -20, terminal (drone jatuh)"
+            trace.add("hdr", f"{name} adalah state terminal: {what}.")
+            trace.add("dim", "V(terminal) = 0; tidak ada aksi yang dipilih di sini.")
+            return trace
+        qs = self.q_by_weather(i, k)
+        eu = self.q_values(i, k)
+        best = eu.index(max(eu))
+        weathers = list(self.solutions)
+        trace.add("hdr", "MEU: EU(a|e) = " + " + ".join(f"P({w}|e) x Q_{w}(s,a)" for w in weathers))
+        for a, (label, _) in enumerate(MDP_ACTIONS):
+            parts = " + ".join(f"{self.p[w]:.3f} x {qs[w][a]:+.2f}" for w in weathers)
+            mark = "   <- MEU" if a == best else ""
+            trace.add("good" if a == best else "normal", f"EU({label}) = {parts} = {eu[a]:+.2f}{mark}")
+        for w in weathers:
+            alone = qs[w].index(max(qs[w]))
+            trace.add("dim", f"   bila pasti {w}: aksi terbaik {MDP_ACTIONS[alone][0]}")
+        for w, sol in self.solutions.items():
+            kk = self._k(sol, k)
+            V = sol.history[kk]
+            trace.add("hdr", f"Bellman model {w} (slip {sol.slip * 100:g}%, gamma {sol.gamma:g}, iterasi {kk}): "
+                             "Q(s,a) = sum P(s'|s,a) x [R(s') + gamma V(s')]")
+            for a, (label, _) in enumerate(MDP_ACTIONS):
+                terms = []
+                for p, j in sol.outcomes[i][a]:
+                    if p > 0:
+                        tag = {"goal": "*", "hazard": "!"}.get(sol.kind[j], "")
+                        terms.append(f"{p:.3f}x[{sol.reward[j]:+.1f}+{sol.gamma:g}x{V[j]:+.2f}]{tag}")
+                trace.add("dim", f"   Q_{w}({label}) = {' + '.join(terms)} = {qs[w][a]:+.2f}")
+        trace.add("dim", "   (* = goal, ! = artileri)")
+        trace.add("good", f"pi_MEU({name}) = {MDP_ACTIONS[best][0]}   V(s) harapan = {self.value(i, k):+.2f}")
+        return trace
+
+
+class MDPCache:
+    """Cache LRU solusi value iteration. Kunci = (goal, gamma, slip, versi peta).
+
+    Profil (--mdp-report): satu solve 10-16 ms; goal = posisi tank, jadi tiap
+    tank pindah ke sel BARU butuh solve baru per cuaca (tak terhindarkan karena
+    reward goal ikut pindah). Cache tetap berguna untuk Drone A & B yang
+    mengejar goal sama, gambar per frame, dan tank yang bolak-balik."""
+
+    def __init__(self, size=MDP_CACHE_SIZE):
+        self.size = size
+        self.store = {}
+        self.hits = self.misses = 0
+
+    def get(self, grid, map_version, goal, gamma, slip, step_reward=MDP_STEP_REWARD):
+        key = (goal, gamma, slip, step_reward, map_version)
+        sol = self.store.pop(key, None)
+        if sol is None:
+            self.misses += 1
+            sol = MDPSolution(grid, goal, gamma, slip, step_reward)
+        else:
+            self.hits += 1
+        self.store[key] = sol          # pop + insert = tandai paling baru dipakai
+        while len(self.store) > self.size:
+            self.store.pop(next(iter(self.store)))
+        return sol
+
+    def clear(self):
+        self.store.clear()
+
+
+# ---- 15.4 laporan analisis (CLI --mdp-report) ---------------------------------
+def rollout_outcome(sol, start):
+    """'goal' | 'hazard' | 'stuck' untuk rollout deterministik pi dari start."""
+    path = sol.rollout(start)
+    end = path[-1]
+    kind = sol.kind[end[0] * COLS + end[1]]
+    return kind if kind in ("goal", "hazard") else "stuck"
+
+
+def reward_analysis(seeds=range(5)):
+    """Bandingkan langkah -2 (slide) vs -0.2 untuk tiap gamma & cuaca."""
+    rows = []
+    for step in (MDP_SLIDE_STEP_REWARD, MDP_STEP_REWARD):
+        for gamma in MDP_GAMMAS:
+            for weather, slip in MDP_WEATHER.items():
+                counts = {"goal": 0, "hazard": 0, "stuck": 0}
+                iters = ms = 0.0
+                for seed in seeds:
+                    random.seed(seed)
+                    drone, tank = pick_random_start_positions()
+                    grid, _ = generate_map(drone, tank)
+                    sol = MDPSolution(grid, tank, gamma, slip, step)
+                    iters += sol.iterations
+                    ms += sol.time_ms
+                    for i in sol.free_ids:
+                        counts[rollout_outcome(sol, divmod(i, COLS))] += 1
+                total = sum(counts.values())
+                rows.append((step, gamma, weather, counts["goal"] / total, counts["hazard"] / total,
+                             counts["hazard"] // len(seeds), total // len(seeds),
+                             iters / len(seeds), ms / len(seeds)))
+    return rows
+
+
+def cache_profile(turns=200, seed=11):
+    """Simulasi tank berjalan acak, Drone A & B mengejar memakai MEU (2 cuaca)."""
+    random.seed(seed)
+    drone, tank = pick_random_start_positions()
+    grid, _ = generate_map(drone, tank)
+    cache = MDPCache()
+    new_cells, visited = 0, {tank}
+    t0 = time.perf_counter()
+    for _ in range(turns):
+        moves = [(tank[0] + dr, tank[1] + dc) for _, (dr, dc) in MDP_ACTIONS]
+        moves = [m for m in moves if 0 <= m[0] < ROWS and 0 <= m[1] < COLS and not is_blocked(grid[m[0]][m[1]])]
+        if moves:
+            tank = random.choice(moves)
+        new_cells += tank not in visited
+        visited.add(tank)
+        for _ in range(2 + 3):          # Drone A + Drone B, lalu 3 panggilan gambar per frame
+            for w, slip in MDP_WEATHER.items():
+                cache.get(grid, 0, tank, MDP_DEFAULT_GAMMA, slip)
+    total = (time.perf_counter() - t0) * 1000
+    return {"turns": turns, "new_cells": new_cells, "hits": cache.hits, "misses": cache.misses,
+            "total_ms": total, "per_turn_ms": total / turns}
+
+
+def run_mdp_report():
+    print("Analisis desain reward (5 peta acak, rollout deterministik pi dari tiap sel bebas)")
+    print(f"{'langkah':>8} {'gamma':>5} {'cuaca':>7} {'ke goal':>8} {'bunuh diri':>10} {'sel/peta':>9} "
+          f"{'iterasi':>7} {'ms':>6}")
+    for step, gamma, weather, goal, hazard, n_hz, n, iters, ms in reward_analysis():
+        print(f"{step:>8g} {gamma:>5g} {weather:>7} {goal * 100:>7.1f}% {hazard * 100:>9.1f}% "
+              f"{n_hz:>4d}/{n:<4d} {iters:>7.0f} {ms:>6.1f}")
+    prof = cache_profile()
+    print("\nProfil cache (tank jalan acak 200 giliran, 2 drone mengejar, 2 cuaca, 3 gambar/frame):")
+    print(f"  sel baru dikunjungi tank: {prof['new_cells']}  |  cache hit {prof['hits']}, miss {prof['misses']}"
+          f"  |  total {prof['total_ms']:.0f} ms = {prof['per_turn_ms']:.1f} ms/giliran")
+
+
+# #############################################################################
+# MODUL battle_ui.py
+# #############################################################################
+# =============================================================================
+# BAGIAN 11 -- VISUALISASI & KONTROL MODE BATTLE
+# =============================================================================
 # -----------------------------------------------------------------------
 # Visualisasi pohon pencarian (debug): layout + gambar TreeNode sebagai
 # kotak-kotak yang terhubung garis, mirip diagram pohon minimax di textbook.
@@ -3057,7 +4400,6 @@ def _tree_assign_positions(node, vis_depth, node_w, gap, leaf_counter,
     return node.x
 
 
-ACTION_LABELS = {ACT_ATTACK: "Serang", ACT_DEFEND: "Bertahan", ACT_REPAIR: "Reparasi", None: "ROOT"}
 MODE_LABELS = {
     MODE_MINIMAX: "Minimax", MODE_ALPHABETA: "Alpha-Beta", MODE_EXPECTIMAX: "Expectimax",
     MODE_HILL: "Hill Climbing", MODE_ANNEAL: "Simulated Annealing",
@@ -3362,7 +4704,8 @@ class BattleController:
 
     def __init__(self, game):
         self.game = game
-        self.enc = Encounter(TUNED_PARAMS, random.Random(), command=CommandCenter())
+        self.enc = Encounter(TUNED_PARAMS, random.Random(),
+                             command=CommandCenter(self.game.grid, self.game.tank))
         self.target_id = None
         self.agent = MinimaxAgent()
         self.local_agent = LocalSearchAgent()
@@ -3697,7 +5040,8 @@ class BattleController:
         evaluasi, urutan aksi, kedalaman, dan tampilan tetap dipertahankan.
         Peta, posisi tank, dan drone di mode eksplorasi tidak disentuh."""
         self.round_no += 1
-        self.enc = Encounter(TUNED_PARAMS, random.Random(), command=CommandCenter())
+        self.enc = Encounter(TUNED_PARAMS, random.Random(),
+                             command=CommandCenter(self.game.grid, self.game.tank))
         self.cmd_scroll = 0
         self.target_id = None
         self.agent = MinimaxAgent()   # bersihkan skor debug & pohon lama
@@ -4154,8 +5498,13 @@ class BattleHUD:
         if last:
             view.lines += last.lines
         else:
-            view.add("dim", "Komando mengevaluasi bantuan di akhir tiap ronde. Mainkan satu ronde dulu.")
-        view.add("dim", "Aturan: R1-R2 Outnumbered | R3 Outnumbered & ~Reinforced & GraceOver & SlotFree & QuotaLeft => CallReinforcement | R4-R7 peran")
+            view.add("dim", "Komando mengevaluasi bantuan di akhir tiap ronde (TELL persepsi -> ASK CallReinforcement"
+                            " -> peran -> planner -> eksekusi). Mainkan satu ronde dulu.")
+            if command:
+                view.add_kb(COMMAND_KB)
+                view.add("hdr", "Peta sektor logistik (T=tank, B=pangkalan, X=artileri, angka=unit):")
+                for line in command.world.sector_map_lines(command.facts):
+                    view.add("normal", line)
         _, controller.cmd_max_scroll = draw_kb_overlay(screen, fonts, view, area, controller.cmd_scroll,
                                                        translucent=False, with_close=False)
         controller.cmd_scroll = max(0, min(controller.cmd_scroll, controller.cmd_max_scroll))
@@ -4234,235 +5583,13 @@ def _btn_matches_mode(btn, mode):
     }.get(btn.label) == mode
 
 
-# =============================================================================
-# BAGIAN 6 -- KELAS GAME UTAMA
-# =============================================================================
-# =============================================================================
-# BAGIAN 5D -- MDP & VALUE ITERATION (Decisions Under Uncertainty, materi 09)
-# =============================================================================
-# Pada A*/UCS drone menyusun RENCANA (daftar langkah tetap). Pada mode MDP drone
-# memakai KEBIJAKAN pi(s): aturan "di sel ini lakukan aksi itu" yang tetap valid
-# walau gerakan meleset (slip), karena dihitung dari model ketidakpastian:
-#
-#   1. State s            : sel peta. Goal (posisi tank) dan sel artileri = terminal.
-#   2. Action             : Atas / Kanan / Kiri / Bawah.
-#   3. Transition P(s'|s,a): berhasil (1 - slip), meleset ke dua sisi tegak lurus
-#                            masing-masing slip / 2 (angin / jamming). Keluar peta = diam.
-#   4. Reward R(s')       : goal +10, artileri -20 (drone jatuh), selain itu
-#                            -0.2 x biaya terrain (tanah biasa = -0.2).
-#   5. Discount gamma     : 0.8 / 0.9 / 0.95 (default 0.9).
-#
-# Skala reward diukur, bukan ditebak. Angka slide (langkah -2, goal +10) cocok untuk
-# dunia 4 state; di grid 22x16 dengan jarak ~35 langkah, gamma=0.8 membuat goal
-# nyaris tak bernilai (0.8^35 = 0.0004) dan gamma=0.95 membuat berjalan terus
-# (-2/(1-gamma) = -40) lebih buruk daripada menabrak artileri (-20): drone memilih
-# bunuh diri (109 dari 346 sel). Itu jebakan "desain reward" di slide 23. Dengan langkah
-# -0.2, gamma 0.9 / 0.95 menuntun >99% sel sampai goal tanpa bunuh diri; gamma 0.8 sengaja
-# tetap ada sebagai contoh kebijakan yang "rabun jauh".
-#
-# Bellman : Q(s,a) = sum_s' P(s'|s,a) [ R(s') + gamma V(s') ]
-#           V(s)   = max_a Q(s,a)         (V = 0 pada state terminal)
-# Value iteration: V0 = 0, hitung V(k+1) hanya dari V(k), berhenti saat perubahan
-# terbesar < MDP_EPS. Padanan slide: slip = f (peluang banjir 0.1 normal / 0.25
-# saat peringatan BMKG) -> cuaca "Normal" / "Badai" di game.
-
-MDP_ACTIONS = (("Atas", (-1, 0)), ("Kanan", (0, 1)), ("Kiri", (0, -1)), ("Bawah", (1, 0)))
-MDP_GOAL_REWARD = 10.0
-MDP_HAZARD_REWARD = -20.0
-MDP_STEP_REWARD = -0.2          # per satuan biaya terrain drone
-MDP_GAMMAS = (0.8, 0.9, 0.95)
-MDP_DEFAULT_GAMMA = 0.9
-MDP_WEATHER = {"Normal": 0.10, "Badai": 0.25}    # peluang slip total (analog f pada slide)
-MDP_EPS = 1e-4
-MDP_MAX_ITER = 300
-MDP_CACHE_SIZE = 6
-
-
-class MDPSolution:
-    """Hasil value iteration untuk satu goal pada satu peta, gamma, dan slip.
-
-    Menyimpan seluruh riwayat V_0..V_K supaya tiap iterasi bisa ditampilkan
-    (seperti tabel iterasi di slide). Waktu: O(K x S x A); memori: O(K x S)."""
-
-    def __init__(self, grid, goal, gamma, slip):
-        t0 = time.perf_counter()
-        self.goal, self.gamma, self.slip = goal, gamma, slip
-        n = ROWS * COLS
-        self.n = n
-        self.goal_id = goal[0] * COLS + goal[1]
-        self.reward = [0.0] * n
-        self.kind = ["free"] * n            # free | goal | hazard
-        for r in range(ROWS):
-            for c in range(COLS):
-                i = r * COLS + c
-                terrain = grid[r][c]
-                if i == self.goal_id:
-                    self.kind[i], self.reward[i] = "goal", MDP_GOAL_REWARD
-                elif terrain == ARTILLERY:
-                    self.kind[i], self.reward[i] = "hazard", MDP_HAZARD_REWARD
-                else:
-                    self.reward[i] = MDP_STEP_REWARD * DRONE_TERRAIN_COST[terrain]
-        self.free_ids = [i for i in range(n) if self.kind[i] == "free"]
-
-        # model transisi: outcomes[i][a] = ((p, j), (p, j), (p, j)); j = state pendaratan
-        self.outcomes = {}
-        for i in self.free_ids:
-            r, c = divmod(i, COLS)
-            per_action = []
-            for _, (dr, dc) in MDP_ACTIONS:
-                moves = ((dr, dc, 1 - slip), (dc, dr, slip / 2), (-dc, -dr, slip / 2))
-                landing = []
-                for mr, mc, p in moves:
-                    nr, nc = r + mr, c + mc
-                    j = nr * COLS + nc if 0 <= nr < ROWS and 0 <= nc < COLS else i   # keluar peta: diam
-                    landing.append((p, j))
-                per_action.append(tuple(landing))
-            self.outcomes[i] = tuple(per_action)
-        # bentuk siap-hitung: (sum p*R(j), p0, j0, p1, j1, p2, j2) per aksi
-        fast = {}
-        for i, per_action in self.outcomes.items():
-            rows = []
-            for (p0, j0), (p1, j1), (p2, j2) in per_action:
-                base = p0 * self.reward[j0] + p1 * self.reward[j1] + p2 * self.reward[j2]
-                rows.append((base, p0, j0, p1, j1, p2, j2))
-            fast[i] = tuple(rows)
-
-        # iterasi minimum: gelombang informasi dari goal harus sempat menjangkau sel
-        # terjauh (BFS), kalau tidak sel jauh berhenti "mendatar" sebelum kebijakannya jelas.
-        depth = self._max_depth()
-        gm = gamma
-        V = [0.0] * n
-        self.history = [array("d", V)]
-        k = 0
-        while k < MDP_MAX_ITER:
-            nxt = V[:]
-            delta = 0.0
-            for i in self.free_ids:
-                best = -math.inf
-                for base, p0, j0, p1, j1, p2, j2 in fast[i]:
-                    q = base + gm * (p0 * V[j0] + p1 * V[j1] + p2 * V[j2])
-                    if q > best:
-                        best = q
-                nxt[i] = best
-                d = abs(best - V[i])
-                if d > delta:
-                    delta = d
-            V = nxt
-            k += 1
-            self.history.append(array("d", V))
-            if delta < MDP_EPS and k >= depth + 2:
-                break
-        self.iterations = k
-        self._policies = {}
-        self.time_ms = (time.perf_counter() - t0) * 1000.0
-
-    def _max_depth(self):
-        """Jarak BFS terjauh dari goal lewat sel non-artileri (batas bawah iterasi)."""
-        seen = {self.goal_id: 0}
-        queue = deque((self.goal_id,))
-        while queue:
-            i = queue.popleft()
-            r, c = divmod(i, COLS)
-            for _, (dr, dc) in MDP_ACTIONS:
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < ROWS and 0 <= nc < COLS:
-                    j = nr * COLS + nc
-                    if j not in seen and self.kind[j] == "free":
-                        seen[j] = seen[i] + 1
-                        queue.append(j)
-        return max(seen.values())
-
-    # ---- akses nilai / kebijakan ------------------------------------------
-    def q_values(self, i, k=None):
-        """Q(s, a) untuk keempat aksi, dihitung dari V_k (k=None -> iterasi akhir)."""
-        V = self.history[self.iterations if k is None else k]
-        out = []
-        for per in self.outcomes[i]:
-            out.append(sum(p * (self.reward[j] + self.gamma * V[j]) for p, j in per))
-        return out
-
-    def policy(self, k=None):
-        """pi_k(s): indeks aksi terbaik menurut V_k (-1 untuk state terminal)."""
-        k = self.iterations if k is None else k
-        if k not in self._policies:
-            pol = [-1] * self.n
-            for i in self.free_ids:
-                q = self.q_values(i, k)
-                pol[i] = q.index(max(q))
-            self._policies[k] = pol
-        return self._policies[k]
-
-    def value(self, i, k=None):
-        return self.history[self.iterations if k is None else k][i]
-
-    def rollout(self, pos):
-        """Rute yang akan ditempuh bila semua aksi berhasil (tanpa slip), mengikuti pi."""
-        pol = self.policy()
-        path, seen = [pos], {pos}
-        while len(path) <= self.n:
-            i = pos[0] * COLS + pos[1]
-            a = pol[i]
-            if a < 0:
-                break
-            dr, dc = MDP_ACTIONS[a][1]
-            pos = (pos[0] + dr, pos[1] + dc)
-            if not (0 <= pos[0] < ROWS and 0 <= pos[1] < COLS) or pos in seen:
-                break
-            path.append(pos)
-            seen.add(pos)
-            if self.kind[pos[0] * COLS + pos[1]] != "free":
-                break
-        return path
-
-    def sample_step(self, pos):
-        """Satu langkah NYATA dari pos: aksi pi(s), hasilnya diundi sesuai P(s'|s,a)."""
-        i = pos[0] * COLS + pos[1]
-        a = self.policy()[i]
-        if a < 0:
-            return pos
-        roll = random.random()
-        acc = 0.0
-        for p, j in self.outcomes[i][a]:
-            acc += p
-            if roll < acc:
-                return divmod(j, COLS)
-        return divmod(self.outcomes[i][a][0][1], COLS)
-
-    # ---- penjelasan Bellman untuk overlay -----------------------------------
-    def bellman_trace(self, cell, k=None):
-        k = self.iterations if k is None else k
-        name = cell_name(cell)
-        trace = KbTrace(f"MDP -- Bellman di {name} (iterasi {k}/{self.iterations})")
-        i = cell[0] * COLS + cell[1]
-        if self.kind[i] != "free":
-            what = "goal (posisi tank): reward +10, terminal" if self.kind[i] == "goal" \
-                else "artileri anti-udara: reward -20, terminal (drone jatuh)"
-            trace.add("hdr", f"{name} adalah state terminal: {what}.")
-            trace.add("dim", "V(terminal) = 0; tidak ada aksi yang dipilih di sini.")
-            return trace
-        q = self.q_values(i, k)
-        best = max(q)
-        pol = q.index(best)
-        trace.add("hdr", "Q(s,a) = sum P(s'|s,a) x [ R(s') + gamma x V(s') ]      V(s) = max_a Q(s,a)")
-        trace.add("dim", f"gamma={self.gamma:g}  slip={self.slip * 100:g}%  "
-                         f"(berhasil {100 - self.slip * 100:g}%, meleset ke tiap sisi {self.slip * 50:g}%)")
-        V = self.history[k]
-        for a, (label, _) in enumerate(MDP_ACTIONS):
-            style = "good" if a == pol else "normal"
-            mark = "   <- pi(s)" if a == pol else ""
-            trace.add(style, f"Q({name}, {label}) = {q[a]:+.2f}{mark}")
-            for p, j in self.outcomes[i][a]:
-                if p <= 0:
-                    continue
-                tag = {"goal": " goal", "hazard": " ARTILERI"}.get(self.kind[j], "")
-                trace.add("dim", f"    {p:.3f} x [ R={self.reward[j]:+.1f} + {self.gamma:g} x V({cell_name(divmod(j, COLS))})"
-                                 f"={V[j]:+.2f} ]{tag}")
-        trace.add("good", f"V_{k + 1}({name}) = max Q = {best:+.2f}  ->  pi({name}) = {MDP_ACTIONS[pol][0]}")
-        return trace
-
+# #############################################################################
+# MODUL game.py
+# #############################################################################
+POLICY_CACHE_SIZE = 8           # kebijakan MEU (goal x belief) yang disimpan
 
 # =============================================================================
-# BAGIAN 6A -- DRONE PATROLI KEDUA (Drone B)
+# BAGIAN 16 -- DRONE PATROLI KEDUA (Drone B)
 # =============================================================================
 STATE_SHORT = {
     "searching": "MENYISIR", "chasing": "MENGEJAR", "investigating": "MENYELIDIKI",
@@ -4482,6 +5609,7 @@ class PatrolDrone:
         self.index = find_nearest_search_index(pattern, pos) if pattern else 0
         self.state = "searching"
         self.last_known_pos = None
+        self.lkp_from_kb = False     # True bila posisi terakhir berasal dari KB NPC (kontak dibagikan)
         self.path = []
 
 
@@ -4509,6 +5637,9 @@ def pick_second_drone_pos(grid, tank, drone):
     return random.choice(candidates)
 
 
+# =============================================================================
+# BAGIAN 17 -- KELAS GAME UTAMA (mode eksplorasi)
+# =============================================================================
 class Game:
     def __init__(self, screen):
         self.screen = screen
@@ -4548,7 +5679,10 @@ class Game:
         self.drone = self.initial_drone_pos
         self.tank_dir = (0, -1)
         self.show_map_debug = False
-        self.grid, self.map_stats = generate_map(self.drone, self.tank)
+        self.map_version = 0             # naik tiap peta baru (kunci cache, ganti hash grid per frame)
+        self._mdp_cache = MDPCache()
+        self._policy_cache = {}
+        self._new_map()
         self.last_path = []
         self.game_over = False
 
@@ -4557,21 +5691,21 @@ class Game:
         self.search_index = 0
         self.visited_cells = set()
         self.last_known_pos = None
+        self.lkp_from_kb = False
 
         # cache gambar: medan statis + layer transparan yang dipakai ulang
         self._terrain_sig = None
         self._terrain_cache = None
         self._layers = {}
 
-        # MDP: kebijakan drone dari value iteration (materi 09)
+        # MDP: kebijakan drone dari value iteration + MEU di atas belief cuaca (materi 09).
+        # true_weather & belief dibuat di _new_map(): cuaca nyata tersembunyi dari drone.
         self.mdp_gamma = MDP_DEFAULT_GAMMA
-        self.mdp_weather = "Normal"      # kunci MDP_WEATHER
         self.mdp_view = "panah"          # panah | angka | mati
         self.mdp_iter = None             # iterasi yang ditampilkan; None = iterasi akhir
         self.mdp_cell = None
         self.mdp_trace = None
         self.mdp_losses = 0
-        self._mdp_cache = {}
         self._mdp_layer = None           # (solusi, kunci, surface) -> render ulang hanya bila berubah
         self._mdp_last = None
         self._mdp_cached_hit = False
@@ -4643,14 +5777,15 @@ class Game:
         y += 38
 
         # kontrol MDP (hanya muncul & aktif saat algoritma = MDP; tata letak dibangun ulang di set_algo)
-        half = w // 2 - 3
-        self.btn_weather = Button((x, y, half, 26), "", self.toggle_weather)
-        self.btn_mdp_view = Button((x + half + 6, y, half, 26), "", self.cycle_mdp_view)
+        third_w = (w - 12) // 3
+        self.btn_weather = Button((x, y, third_w, 26), "", self.toggle_weather)
+        self.btn_report = Button((x + third_w + 6, y, third_w, 26), "Lapor cuaca", self.request_weather_report)
+        self.btn_mdp_view = Button((x + 2 * (third_w + 6), y, third_w, 26), "", self.cycle_mdp_view)
         self.btn_iter_prev = Button((x, y + 32, 34, 26), "<", lambda: self.step_mdp_iter(-1))
         self.btn_iter_label = Button((x + 38, y + 32, w - 134, 26), "", lambda: None)
         self.btn_iter_next = Button((x + w - 92, y + 32, 34, 26), ">", lambda: self.step_mdp_iter(1))
         self.btn_iter_final = Button((x + w - 54, y + 32, 54, 26), "Akhir", self.mdp_iter_final)
-        self.mdp_controls = [self.btn_weather, self.btn_mdp_view, self.btn_iter_prev,
+        self.mdp_controls = [self.btn_weather, self.btn_report, self.btn_mdp_view, self.btn_iter_prev,
                              self.btn_iter_label, self.btn_iter_next, self.btn_iter_final]
         if self.algo == "mdp":
             y += 68
@@ -4712,26 +5847,43 @@ class Game:
             self.overlay_kind = None
         self._build_ui()        # tata letak panel berbeda di mode MDP
         if algo == "mdp":
-            self.status_text = ("Mode MDP: drone mengejar/menyelidiki memakai kebijakan (value iteration) "
-                                "dan bisa meleset; patroli tetap A*. Klik sel di peta untuk melihat perhitungan Bellman.")
+            self.status_text = ("Mode MDP: drone mengejar/menyelidiki dengan kebijakan MEU di atas belief cuaca "
+                                "(Bayes); patroli tetap A*. Klik sel di peta untuk melihat EU, Bayes & Bellman.")
 
     # ------------------------------------------------------------------
-    # MDP: kebijakan, tampilan & inspeksi
+    # MDP + BAYES + MEU: kebijakan, percept, tampilan & inspeksi
     # ------------------------------------------------------------------
-    def mdp_slip(self):
-        return MDP_WEATHER[self.mdp_weather]
+    def _new_map(self):
+        """Peta baru: naikkan versi peta, kosongkan cache, undi cuaca nyata, reset belief."""
+        self.grid, self.map_stats = generate_map(self.drone, self.tank)
+        self.map_version += 1
+        self._mdp_cache.clear()
+        self._policy_cache.clear()
+        self.true_weather = random.choices(list(WEATHER_PRIOR), weights=list(WEATHER_PRIOR.values()))[0]
+        self.belief = WeatherBelief()
 
-    def mdp_solution(self, goal):
-        """(MDPSolution, apakah dari cache). Cache LRU kecil: kunci = goal, gamma, slip, peta."""
-        key = (goal, self.mdp_gamma, self.mdp_slip(), hash(tuple(map(tuple, self.grid))))
-        sol = self._mdp_cache.pop(key, None)
-        cached = sol is not None
-        if sol is None:
-            sol = MDPSolution(self.grid, goal, self.mdp_gamma, self.mdp_slip())
-        self._mdp_cache[key] = sol          # pop + insert = tandai paling baru dipakai
-        while len(self._mdp_cache) > MDP_CACHE_SIZE:
-            self._mdp_cache.pop(next(iter(self._mdp_cache)))
-        return sol, cached
+    def mdp_solution(self, goal, note=None):
+        """(BeliefPolicy, apakah dari cache).
+
+        Satu solusi value iteration per cuaca (cache LRU, kunci = goal, gamma,
+        slip, versi peta), digabung dengan belief saat ini menjadi kebijakan MEU."""
+        key = (goal, self.mdp_gamma, self.map_version, self.belief.key())
+        policy = self._policy_cache.pop(key, None)
+        cached = policy is not None
+        if policy is None:
+            misses = self._mdp_cache.misses
+            sols = {w: self._mdp_cache.get(self.grid, self.map_version, goal, self.mdp_gamma, slip)
+                    for w, slip in MDP_WEATHER.items()}
+            cached = self._mdp_cache.misses == misses
+            policy = BeliefPolicy(sols, self.belief.p)
+        if note is not None:
+            policy.goal_note = note
+        elif not policy.goal_note:
+            policy.goal_note = f"posisi tank {cell_name(goal)} (+10, terminal)"
+        self._policy_cache[key] = policy
+        while len(self._policy_cache) > POLICY_CACHE_SIZE:
+            self._policy_cache.pop(next(iter(self._policy_cache)))
+        return policy, cached
 
     def _mdp_k(self, sol):
         return sol.iterations if self.mdp_iter is None else min(self.mdp_iter, sol.iterations)
@@ -4739,7 +5891,7 @@ class Game:
     def _refresh_mdp_trace(self):
         if self.algo == "mdp" and self.mdp_cell is not None:
             sol, _ = self.mdp_solution(self.tank)
-            self.mdp_trace = sol.bellman_trace(self.mdp_cell, self._mdp_k(sol))
+            self.mdp_trace = sol.bellman_trace(self.mdp_cell, self._mdp_k(sol), self.belief)
 
     def set_mdp_gamma(self, gamma):
         self.mdp_gamma = gamma
@@ -4747,11 +5899,25 @@ class Game:
         self._refresh_mdp_trace()
 
     def toggle_weather(self):
-        self.mdp_weather = "Badai" if self.mdp_weather == "Normal" else "Normal"
-        self.mdp_iter = None
+        """Ganti cuaca NYATA (dunia). Drone tidak diberi tahu; ia harus menyimpulkannya dari bukti."""
+        self.true_weather = "Badai" if self.true_weather == "Normal" else "Normal"
         self._refresh_mdp_trace()
-        self.status_text = (f"Cuaca {self.mdp_weather}: peluang gerakan meleset {self.mdp_slip() * 100:g}% "
-                            "-> kebijakan dihitung ulang.")
+        self.status_text = (f"Cuaca nyata kini {self.true_weather} (slip {MDP_WEATHER[self.true_weather] * 100:g}%). "
+                            f"Drone belum tahu: belief P(Badai)={self.belief.p['Badai']:.2f} berubah lewat bukti.")
+
+    def request_weather_report(self):
+        """Percept laporan cuaca: benar dengan peluang REPORT_ACCURACY, lalu update Bayes."""
+        others = [w for w in MDP_WEATHER if w != self.true_weather]
+        reported = self.true_weather if random.random() < REPORT_ACCURACY else random.choice(others)
+        before = self.belief.p["Badai"]
+        self.belief.observe_report(reported)
+        self.mdp_iter = None
+        if self.mdp_cell is None:
+            self.mdp_cell = self.drone
+        self._refresh_mdp_trace()
+        self.overlay_kind, self.overlay_scroll = "mdp", 0
+        self.status_text = (f"Laporan cuaca (akurasi {REPORT_ACCURACY * 100:g}%): {reported}. "
+                            f"Bayes: P(Badai) {before:.2f} -> {self.belief.p['Badai']:.2f}.")
 
     def cycle_mdp_view(self):
         order = ("panah", "angka", "mati")
@@ -4772,26 +5938,40 @@ class Game:
         self._refresh_mdp_trace()
         self.overlay_kind, self.overlay_scroll = "mdp", 0
 
-    def _goal_step(self, pos, goal):
-        """Langkah menuju goal: RENCANA (UCS/A*) atau KEBIJAKAN (MDP).
-        Mode MDP: aksi = pi(pos), hasilnya diundi dari P(s'|s,a) sehingga bisa meleset.
+    def _goal_step(self, pos, goal, note=None):
+        """Langkah menuju goal: RENCANA (UCS/A*) atau KEBIJAKAN MEU (MDP).
+
+        Mode MDP: aksi = argmax_a sum_w P(w|e) Q_w(s,a); hasilnya diundi dari
+        P(s'|s,a, cuaca NYATA) sehingga bisa meleset. Meleset / tidaknya adalah
+        percept yang meng-update belief lewat Bayes.
         Path hasil = [pos, langkah nyata, rute pi dari sana] (path[1] dipakai sebagai gerakan)."""
         if self.algo != "mdp":
             return search(self.grid, pos, goal, self.algo, self.heuristic)
         t0 = time.perf_counter()
-        sol, cached = self.mdp_solution(goal)
+        sol, cached = self.mdp_solution(goal, note)
         self._result_from_mdp, self._mdp_last, self._mdp_cached_hit = True, sol, cached
         i = pos[0] * COLS + pos[1]
         if pos == goal:
             return SearchResult([pos], 0.0, sol.iterations, [], 0.0, True)
         if sol.kind[i] != "free":
             return SearchResult([], math.inf, sol.iterations, [], 0.0, False)
-        nxt = sol.sample_step(pos)
+        value = sol.value(i)
+        nxt, slipped, slip_obs = sol.sample_step(pos, self.true_weather)
+        if slip_obs is not None:
+            self.belief.observe_move(slipped, slip_obs)
         if sol.kind[nxt[0] * COLS + nxt[1]] == "hazard":
             path = [pos, nxt]
         else:
             path = [pos] + sol.rollout(nxt)
-        return SearchResult(path, sol.value(i), sol.iterations, [], (time.perf_counter() - t0) * 1000.0, True)
+        return SearchResult(path, value, sol.iterations, [], (time.perf_counter() - t0) * 1000.0, True)
+
+    def _goal_note(self, who, sees):
+        """Asal goal MDP: kamera drone sendiri, atau kontak dari KB NPC (ASK Investigate)."""
+        if sees:
+            return f"posisi tank (terlihat kamera Drone {who}), +10 terminal"
+        from_kb = self.lkp_from_kb if who == "A" else self.drone_b.lkp_from_kb
+        src = ("kontak dibagikan rekan: KB NPC membuktikan Investigate(Drone" + who + ")") if from_kb             else "kontak terakhir kamera sendiri"
+        return f"posisi terakhir tank ({src}), +10 terminal"
 
     def _hazard_hit_a(self):
         """Drone A meleset ke artileri anti-udara (terminal -20): jatuh & respawn."""
@@ -4833,7 +6013,7 @@ class Game:
         self.tank = self.initial_tank_pos
         self.drone = self.initial_drone_pos
         self.tank_dir = (0, -1)
-        self.grid, self.map_stats = generate_map(self.drone, self.tank)
+        self._new_map()
         self.last_path = []
         self.game_over = False
         self.setup_second_drone(new_position=True)
@@ -4915,7 +6095,7 @@ class Game:
         self.tank = self.initial_tank_pos
         self.drone = self.initial_drone_pos
         self.tank_dir = (0, -1)
-        self.grid, self.map_stats = generate_map(self.drone, self.tank)
+        self._new_map()
         self.last_path = []
         self.game_over = False
         self.setup_second_drone(new_position=True)
@@ -5083,10 +6263,11 @@ class Game:
         if detected:
             self.drone_state = "chasing"
             self.last_known_pos = self.tank
-            result = self._goal_step(self.drone, self.tank)
+            self.lkp_from_kb = False
+            result = self._goal_step(self.drone, self.tank, self._goal_note("A", True))
         elif self.last_known_pos and self.drone != self.last_known_pos:
             self.drone_state = "investigating"
-            result = self._goal_step(self.drone, self.last_known_pos)
+            result = self._goal_step(self.drone, self.last_known_pos, self._goal_note("A", False))
             if not result.found:
                 self.last_known_pos = None
                 self.drone_state = "searching"
@@ -5162,9 +6343,9 @@ class Game:
                 continue
             trace.add("good", f"Aksi: {receiver} menyelidiki posisi tank {self.tank} (kontak dibagikan).")
             if receiver == "DroneB":
-                b.last_known_pos = self.tank
+                b.last_known_pos, b.lkp_from_kb = self.tank, True
             else:
-                self.last_known_pos = self.tank
+                self.last_known_pos, self.lkp_from_kb = self.tank, True
             self._share_note = f"[KB] {spotter} membagikan kontak ke {receiver}."
 
     def _b_search_step(self, b):
@@ -5188,10 +6369,11 @@ class Game:
         if sees:
             b.state = "chasing"
             b.last_known_pos = self.tank
-            result = self._goal_step(b.pos, self.tank)
+            b.lkp_from_kb = False
+            result = self._goal_step(b.pos, self.tank, self._goal_note("B", True))
         elif b.last_known_pos and b.pos != b.last_known_pos:
             b.state = "investigating"
-            result = self._goal_step(b.pos, b.last_known_pos)
+            result = self._goal_step(b.pos, b.last_known_pos, self._goal_note("B", False))
             if not result.found:
                 b.last_known_pos = None
                 b.state = "searching"
@@ -5259,7 +6441,9 @@ class Game:
                 return self.npc_trace
             empty = KbTrace("INTERAKSI NPC -- belum ada inferensi")
             empty.add("dim", "Inferensi muncul saat salah satu drone melihat tank dan rekannya belum.")
-            empty.add("dim", "Aturan: S1 Ally simetris | S2 Spotted(d) & Ally(d,e) => Alerted(e) | S3 Alerted(e) & ~Chasing(e) => Investigate(e)")
+            empty.add_kb(NPC_KB)
+            empty.add("dim", "Langkah berikutnya saat ada kontak: TELL Spotted/Ally/Chasing -> ASK Investigate(rekan) "
+                             "-> bukti resolusi -> aksi.")
             return empty
         return None
 
@@ -5273,10 +6457,10 @@ class Game:
         if self._result_from_mdp and self._mdp_last is not None:
             sol = self._mdp_last
             self.stats_lines = [
-                "Algoritma       : MDP (Value Iter.)",
-                f"gamma / slip    : {sol.gamma:g} / {sol.slip * 100:g}% ({self.mdp_weather})",
+                "Algoritma       : MDP + MEU (Bayes)",
+                f"P(Badai|e)/slip : {self.belief.p['Badai']:.2f} / {sol.slip * 100:.1f}% harapan",
+                f"gamma / nyata   : {sol.gamma:g} / {self.true_weather} (tersembunyi)",
                 f"V(drone) / jatuh: {result.cost:+.2f} / {self.mdp_losses}",
-                f"Iterasi / state : {sol.iterations} / {len(sol.free_ids)}",
                 f"Waktu komputasi : {result.time_ms:.3f} ms{' (cache)' if self._mdp_cached_hit else ''}",
             ]
             return
@@ -5409,7 +6593,7 @@ class Game:
 
         # Medan hanya berubah saat peta berganti / jendela di-resize: gambar sekali,
         # lalu cukup di-blit (352 sel x ikon + label biaya = ~60% waktu satu frame).
-        signature = (CELL, tuple(map(tuple, self.grid)))
+        signature = (CELL, self.map_version)
         if signature != self._terrain_sig:
             pygame.draw.rect(screen, COLORS["dirt"], board_rect)
             for r in range(ROWS):
@@ -5724,7 +6908,7 @@ class Game:
     def _render_mdp_layer(self, sol, k):
         """Heatmap V_k(s) + panah pi_k(s) (atau angka V_k) untuk seluruh papan."""
         surf = pygame.Surface((BOARD_W, BOARD_H), pygame.SRCALPHA)
-        V = sol.history[k]
+        V = sol.value_array(k)
         policy = sol.policy(k)
         values = [V[i] for i in sol.free_ids]
         low, high = min(values), max(values)
@@ -5795,7 +6979,8 @@ class Game:
         pygame.draw.rect(screen, (200, 40, 40), (x + 462, y, 12, 12))
         screen.blit(self.font_legend.render("artileri (-20, drone jatuh)", True, COLORS["text_dim"]), (x + 480, y))
         y += 24
-        info = (f"gamma={sol.gamma:g} | cuaca {self.mdp_weather}: slip {sol.slip * 100:g}% | iterasi {k}/{sol.iterations} "
+        info = (f"gamma={sol.gamma:g} | P(Badai|e)={self.belief.p['Badai']:.2f} -> slip harapan {sol.slip * 100:.1f}% "
+                f"| iterasi {k}/{sol.iterations} "
                 f"| {len(sol.free_ids)} state | hitung {sol.time_ms:.1f} ms")
         screen.blit(self.font_small.render(info, True, COLORS["text_cream"]), (x, y))
         y += 20
@@ -5855,8 +7040,8 @@ class Game:
 
         if self.algo == "mdp":
             sol, _ = self.mdp_solution(self.tank)
-            self.btn_weather.label = f"Cuaca: {self.mdp_weather} {self.mdp_slip() * 100:g}%"
-            self.btn_weather.primary = self.mdp_weather == "Badai"
+            self.btn_weather.label = f"Nyata: {self.true_weather}"
+            self.btn_weather.primary = self.true_weather == "Badai"
             self.btn_mdp_view.label = {"panah": "Tampil: Panah", "angka": "Tampil: Angka V", "mati": "Tampil: Mati"}[self.mdp_view]
             self.btn_mdp_view.primary = self.mdp_view != "mati"
             self.btn_iter_label.label = f"Iterasi {self._mdp_k(sol)} / {sol.iterations}"
@@ -5932,12 +7117,21 @@ class Game:
                 table_y += 14
 
 
+# #############################################################################
+# MODUL tank_vs_drone_simulasi_ukraina.py
+# #############################################################################
+MDP_REPORT_FLAG = "--mdp-report"
+
+
 # =============================================================================
-# BAGIAN 7 -- MAIN LOOP
+# BAGIAN 18 -- MAIN LOOP
 # =============================================================================
 def main():
     if TUNE_FLAG in sys.argv[1:]:
         run_tuning_cli(sys.argv[1:])
+        return
+    if MDP_REPORT_FLAG in sys.argv[1:]:
+        run_mdp_report()
         return
 
     pygame.init()
